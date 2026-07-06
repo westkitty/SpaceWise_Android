@@ -1,0 +1,40 @@
+name: Publish Existing Debug APK
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  publish:
+    name: Upload committed debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify APK exists
+        shell: bash
+        run: |
+          test -f app-debug.apk
+          file app-debug.apk
+          ls -lh app-debug.apk
+
+      - name: Stage APK
+        shell: bash
+        run: |
+          mkdir -p out
+          cp app-debug.apk out/SpaceWise-debug.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SpaceWise-debug-apk
+          path: out/SpaceWise-debug.apk
+          if-no-files-found: error
