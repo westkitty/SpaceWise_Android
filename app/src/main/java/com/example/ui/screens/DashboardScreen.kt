@@ -25,7 +25,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.PieChart
-import androidx.compose.material.icons.filled.InsertDriveFile
+import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.AutoAwesome
@@ -42,7 +42,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.platform.testTag
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.input.pointer.pointerInput
@@ -775,7 +775,7 @@ fun AdvisorySuggestionCard(
         SuggestionType.CACHE_CLEANUP -> Icons.Default.Refresh
         SuggestionType.UNUSED_APP -> Icons.Default.Apps
         SuggestionType.LARGE_VIDEO -> Icons.Default.PieChart
-        SuggestionType.LARGE_DOCUMENT -> Icons.Default.InsertDriveFile
+        SuggestionType.LARGE_DOCUMENT -> Icons.AutoMirrored.Filled.InsertDriveFile
         SuggestionType.SYSTEM_RECOMMENDATION -> Icons.Default.Storage
     }
 
