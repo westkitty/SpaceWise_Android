@@ -1,0 +1,75 @@
+name: Build Debug APK
+
+on:
+  push:
+    branches:
+      - chatgpt/build-debug-apk
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    name: Assemble debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android platform
+        shell: bash
+        run: |
+          sdkmanager --install "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.1.0'
+
+      - name: Prepare CI build files
+        shell: bash
+        run: |
+          cat > local.properties <<EOF
+          sdk.dir=$ANDROID_HOME
+          EOF
+          keytool -genkeypair -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          if grep -q 'minorApiLevel = 1' app/build.gradle.kts; then
+            python3 - <<'PY'
+          from pathlib import Path
+          p = Path('app/build.gradle.kts')
+          s = p.read_text()
+          s = s.replace('compileSdk { version = release(36) { minorApiLevel = 1 } }', 'compileSdk = 36')
+          p.write_text(s)
+          PY
+          fi
+
+      - name: Assemble debug APK
+        shell: bash
+        run: gradle --no-daemon --stacktrace :app:assembleDebug
+
+      - name: Collect APK
+        shell: bash
+        run: |
+          mkdir -p out
+          cp app/build/outputs/apk/debug/*.apk out/SpaceWise-debug.apk
+          ls -lh out/SpaceWise-debug.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SpaceWise-debug-apk
+          path: out/SpaceWise-debug.apk
+          if-no-files-found: error
