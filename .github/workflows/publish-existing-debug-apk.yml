@@ -43,6 +43,7 @@ jobs:
       - name: Prepare signing and Gradle files
         shell: bash
         run: |
+          mkdir -p out
           cat > local.properties <<EOF
           sdk.dir=$ANDROID_HOME
           EOF
@@ -56,10 +57,16 @@ jobs:
               p.write_text(s)
           PY
 
-      - name: Try assembling from source
+      - name: Assemble from source and capture log
         shell: bash
-        continue-on-error: true
-        run: gradle --no-daemon --stacktrace :app:assembleDebug
+        run: |
+          set +e
+          mkdir -p out
+          gradle --no-daemon --stacktrace --info :app:assembleDebug > out/gradle-build.log 2>&1
+          code=$?
+          echo "$code" > out/gradle-exit-code.txt
+          echo "Gradle exit code: $code"
+          exit 0
 
       - name: Select verified APK
         shell: bash
@@ -69,10 +76,14 @@ jobs:
           diag=out/apk-diagnostics.txt
           : > "$diag"
           {
+            echo "Gradle exit code: $(cat out/gradle-exit-code.txt 2>/dev/null || echo missing)"
             echo "PWD: $(pwd)"
             echo "Android home: $ANDROID_HOME"
             echo "Build tools:"
             ls -la "$ANDROID_HOME/build-tools/36.0.0" || true
+            echo
+            echo "Output tree:"
+            find app/build -maxdepth 8 -type f -exec ls -lh {} \; 2>/dev/null | sort || true
             echo
             echo "APK candidates:"
             find . -type f -name '*.apk' -exec ls -lh {} \; | sort || true
@@ -121,7 +132,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: SpaceWise-apk-diagnostics
-          path: out/apk-diagnostics.txt
+          path: |
+            out/apk-diagnostics.txt
+            out/gradle-build.log
+            out/gradle-exit-code.txt
           if-no-files-found: warn
 
       - name: Upload APK artifact
