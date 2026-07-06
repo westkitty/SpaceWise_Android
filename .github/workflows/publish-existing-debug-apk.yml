@@ -57,30 +57,31 @@ jobs:
           PY
 
       - name: Try assembling from source
-        id: build_from_source
         shell: bash
         continue-on-error: true
         run: gradle --no-daemon --stacktrace :app:assembleDebug
 
-      - name: Stage rebuilt APK if available
+      - name: Stage or repair APK
         shell: bash
         run: |
+          set -e
           mkdir -p out
-          if ls app/build/outputs/apk/debug/*.apk >/dev/null 2>&1; then
-            cp app/build/outputs/apk/debug/*.apk out/SpaceWise-debug.apk
+          built_apk=""
+          if find app/build/outputs/apk -type f -name '*.apk' -print -quit >/tmp/apk_path 2>/dev/null; then
+            built_apk="$(cat /tmp/apk_path)"
           fi
-
-      - name: Repair committed APK if rebuild did not produce one
-        if: ${{ hashFiles('out/SpaceWise-debug.apk') == '' }}
-        shell: bash
-        run: |
-          test -f app-debug.apk
-          mkdir -p out
-          cp app-debug.apk working.apk
-          if zipalign -p -f 4 working.apk aligned.apk; then
-            apksigner sign --ks debug.keystore --ks-pass pass:android --key-pass pass:android --out out/SpaceWise-debug.apk aligned.apk
+          if [ -n "$built_apk" ] && [ -s "$built_apk" ]; then
+            echo "Using rebuilt APK: $built_apk"
+            cp "$built_apk" out/SpaceWise-debug.apk
           else
-            apksigner sign --ks debug.keystore --ks-pass pass:android --key-pass pass:android --out out/SpaceWise-debug.apk working.apk
+            echo "No rebuilt APK found; attempting to repair committed app-debug.apk"
+            test -f app-debug.apk
+            cp app-debug.apk working.apk
+            if zipalign -p -f 4 working.apk aligned.apk; then
+              apksigner sign --ks debug.keystore --ks-pass pass:android --key-pass pass:android --out out/SpaceWise-debug.apk aligned.apk
+            else
+              apksigner sign --ks debug.keystore --ks-pass pass:android --key-pass pass:android --out out/SpaceWise-debug.apk working.apk
+            fi
           fi
 
       - name: Verify final APK
@@ -88,6 +89,7 @@ jobs:
         run: |
           test -s out/SpaceWise-debug.apk
           file out/SpaceWise-debug.apk
+          unzip -t out/SpaceWise-debug.apk >/dev/null
           ls -lh out/SpaceWise-debug.apk
           apksigner verify --verbose out/SpaceWise-debug.apk
 
