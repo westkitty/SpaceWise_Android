@@ -37,3 +37,16 @@ data class AppStorageInfo(
     val formattedSize: String
         get() = ByteFormatting.formatByteCount(sizeBytes)
 }
+
+data class LargeRedundantTempFile(
+    val id: String,
+    val name: String,
+    val category: String, // e.g. "Large File", "Redundant File", "Temporary File"
+    val sizeBytes: Long,
+    val filePath: String,
+    val description: String
+) {
+    val formattedSize: String
+        get() = ByteFormatting.formatByteCount(sizeBytes)
+}
+

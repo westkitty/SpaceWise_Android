@@ -55,6 +55,73 @@ class StorageStatsRepository(private val context: Context) {
         prefs.edit().putStringSet("deleted_smart_clean_ids", current).apply()
     }
 
+    fun getDeletedLargeRedundantTempIds(): Set<String> {
+        return prefs.getStringSet("deleted_large_redundant_temp_ids", emptySet()) ?: emptySet()
+    }
+
+    fun markLargeRedundantTempItemsDeleted(ids: Set<String>) {
+        val current = getDeletedLargeRedundantTempIds().toMutableSet()
+        current.addAll(ids)
+        prefs.edit().putStringSet("deleted_large_redundant_temp_ids", current).apply()
+    }
+
+    fun getLargeRedundantTempFiles(): List<LargeRedundantTempFile> {
+        val deletedIds = getDeletedLargeRedundantTempIds()
+        
+        val allItems = listOf(
+            LargeRedundantTempFile(
+                id = "lrt_off_maps",
+                name = "oversized_offline_cached_maps_v4.db",
+                category = "Large File",
+                sizeBytes = 450_000_000L,
+                filePath = "/Internal Storage/Maps/offline_cache_v4.db",
+                description = "Large database containing unused map datasets stored offline."
+            ),
+            LargeRedundantTempFile(
+                id = "lrt_sys_ota",
+                name = "old_system_upgrade_package.zip",
+                category = "Large File",
+                sizeBytes = 680_000_000L,
+                filePath = "/Internal Storage/Downloads/ota_update_v14.2.zip",
+                description = "Obsolete system recovery zip package downloaded 3 months ago."
+            ),
+            LargeRedundantTempFile(
+                id = "lrt_dup_archive",
+                name = "temp_duplicate_photos_archive.zip",
+                category = "Redundant File",
+                sizeBytes = 185_000_000L,
+                filePath = "/Internal Storage/Pictures/camera_backup_duplicates.zip",
+                description = "A zip archive of pictures already fully synced to your cloud account."
+            ),
+            LargeRedundantTempFile(
+                id = "lrt_dup_apk",
+                name = "redundant_installation_package_v3.apk",
+                category = "Redundant File",
+                sizeBytes = 88_000_000L,
+                filePath = "/Internal Storage/Downloads/installer_v3.apk",
+                description = "The installation APK file of an app already fully installed on this device."
+            ),
+            LargeRedundantTempFile(
+                id = "lrt_temp_logs",
+                name = "obsolete_analytics_logs.bin",
+                category = "Temporary File",
+                sizeBytes = 65_000_000L,
+                filePath = "/System/Logs/analytics_telemetry_dump.bin",
+                description = "Accumulated legacy crash dumps and debug diagnostics logs."
+            ),
+            LargeRedundantTempFile(
+                id = "lrt_temp_glide",
+                name = "app_temporary_glide_image_cache",
+                category = "Temporary File",
+                sizeBytes = 112_000_000L,
+                filePath = "/Internal Storage/Android/data/com.spacewise.app/cache/glide",
+                description = "Web-fetched cover images and temporary avatar thumbnail cache."
+            )
+        )
+        
+        return allItems.filter { it.id !in deletedIds }
+    }
+
     fun getStorageTrends(): List<StorageTrendPoint> {
         val trendPoints = mutableListOf<StorageTrendPoint>()
         

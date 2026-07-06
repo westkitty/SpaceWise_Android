@@ -10,12 +10,14 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Storage
@@ -42,8 +44,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.testTag
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.example.data.models.LargeRedundantTempFile
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.example.data.models.AdvisorySuggestion
@@ -76,6 +81,7 @@ fun DashboardScreen(
     val suggestions by viewModel.suggestions.collectAsState()
     val storageTrends by viewModel.storageTrends.collectAsState()
     val smartCleanItems by viewModel.smartCleanItems.collectAsState()
+    val largeRedundantTempFiles by viewModel.largeRedundantTempFiles.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     
     // Check permission state to show warning card
@@ -162,6 +168,7 @@ fun DashboardScreen(
                         suggestions = suggestions,
                         storageTrends = storageTrends,
                         smartCleanItems = smartCleanItems,
+                        largeRedundantTempFiles = largeRedundantTempFiles,
                         onDeleteSmartCleanItems = { items ->
                             val bytes = items.sumOf { it.sizeBytes }
                             val categories = items.map { item ->
@@ -171,6 +178,18 @@ fun DashboardScreen(
                             successData = Pair(bytes, categories)
                             viewModel.deleteSmartCleanItems(items)
                         },
+                        onDeleteLargeRedundantTempFiles = { items ->
+                            val bytes = items.sumOf { it.sizeBytes }
+                            val categories = items.map { item ->
+                                when (item.category) {
+                                    "Large File" -> "Large Files"
+                                    "Redundant File" -> "Redundant Files"
+                                    else -> "Temporary Files"
+                                }
+                            }.distinct()
+                            successData = Pair(bytes, categories)
+                            viewModel.deleteLargeRedundantTempFiles(items)
+                        },
                         hasMediaPerm = hasMediaPerm,
                         hasUsagePerm = hasUsagePerm,
                         onNavigateToPermissions = onNavigateToPermissions,
@@ -178,6 +197,61 @@ fun DashboardScreen(
                         onNavigateToAppList = onNavigateToAppList,
                         onNavigateToCategoryDetail = onNavigateToCategoryDetail
                     )
+                }
+
+                // Global scanning and loading progress indicator
+                if (isLoading) {
+                    // Sleek progress bar at the very top of the content area
+                    LinearProgressIndicator(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(4.dp)
+                            .align(Alignment.TopCenter),
+                        color = MaterialTheme.colorScheme.primary,
+                        trackColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+                    )
+                    
+                    // Semi-transparent overlay spinner card
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.5f))
+                            .clickable(enabled = true, onClick = {}), // intercept clicks
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Card(
+                            shape = RoundedCornerShape(24.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceColorAtElevation(6.dp)
+                            ),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+                            modifier = Modifier.widthIn(max = 280.dp)
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(24.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(16.dp)
+                            ) {
+                                CircularProgressIndicator(
+                                    color = MaterialTheme.colorScheme.primary,
+                                    strokeWidth = 4.dp,
+                                    modifier = Modifier.size(48.dp).testTag("global_loading_spinner")
+                                )
+                                Text(
+                                    text = "Analyzing Storage...",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = "Scanning for large, redundant, and temporary files to optimize your device space.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -213,7 +287,9 @@ fun DashboardContent(
     suggestions: List<AdvisorySuggestion>,
     storageTrends: List<StorageTrendPoint>,
     smartCleanItems: List<SmartCleanItem>,
+    largeRedundantTempFiles: List<LargeRedundantTempFile>,
     onDeleteSmartCleanItems: (List<SmartCleanItem>) -> Unit,
+    onDeleteLargeRedundantTempFiles: (List<LargeRedundantTempFile>) -> Unit,
     hasMediaPerm: Boolean,
     hasUsagePerm: Boolean,
     onNavigateToPermissions: () -> Unit,
@@ -291,6 +367,18 @@ fun DashboardContent(
                 }
             )
 
+            // Recharts Interactive Pie Chart Card
+            RechartsPieChartCard(
+                categories = snapshot.categories,
+                onCategoryClick = { categoryName ->
+                    if (categoryName == "Apps & Games") {
+                        onNavigateToAppList()
+                    } else {
+                        onNavigateToCategoryDetail(categoryName)
+                    }
+                }
+            )
+
             // 30-Day Storage Trend Chart
             StorageTrendChart(trends = storageTrends)
 
@@ -298,6 +386,12 @@ fun DashboardContent(
             SmartCleanWidget(
                 items = smartCleanItems,
                 onCleanItems = onDeleteSmartCleanItems
+            )
+
+            // Large, Redundant & Temporary Files Cleaner
+            LargeRedundantTempFileWidget(
+                items = largeRedundantTempFiles,
+                onCleanItems = onDeleteLargeRedundantTempFiles
             )
 
             // Storage Tips & Privacy Advice Widget
@@ -1039,3 +1133,533 @@ fun SmartCleanWidget(
         )
     }
 }
+
+@Composable
+fun RechartsPieChartCard(
+    categories: List<CategoryStorage>,
+    onCategoryClick: (String) -> Unit
+) {
+    var selectedIndex by remember { mutableStateOf(-1) }
+    
+    Card(
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        modifier = Modifier.fillMaxWidth().testTag("recharts_pie_chart_card"),
+        border = CardDefaults.outlinedCardBorder()
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = "Storage Distribution",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = "Interactive Recharts-inspired Pie Chart",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                
+                // Recharts brand badge
+                Box(
+                    modifier = Modifier
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.1f), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    Text(
+                        text = "RECHARTS",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+
+            // Pie Chart Canvas
+            Box(
+                modifier = Modifier
+                    .size(200.dp)
+                    .padding(12.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                val haptic = LocalHapticFeedback.current
+                
+                Canvas(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(categories) {
+                            detectTapGestures { offset ->
+                                // Calculate angle from center to find which slice was tapped
+                                val center = Offset(size.width / 2f, size.height / 2f)
+                                val x = offset.x - center.x
+                                val y = offset.y - center.y
+                                var angle = Math.toDegrees(Math.atan2(y.toDouble(), x.toDouble())).toFloat()
+                                if (angle < 0) angle += 360f
+                                
+                                // Adjust for startAngle of -90
+                                var relativeAngle = angle - (-90f)
+                                if (relativeAngle < 0) relativeAngle += 360f
+                                
+                                var currentAngle = 0f
+                                var foundIndex = -1
+                                categories.forEachIndexed { index, cat ->
+                                    val sweep = cat.percentage * 3.6f
+                                    if (relativeAngle >= currentAngle && relativeAngle < currentAngle + sweep) {
+                                        foundIndex = index
+                                    }
+                                    currentAngle += sweep
+                                }
+                                
+                                if (foundIndex != -1) {
+                                    selectedIndex = if (selectedIndex == foundIndex) -1 else foundIndex
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                }
+                            }
+                        }
+                ) {
+                    var startAngle = -90f
+                    val outerRadius = size.minDimension / 2f
+                    val innerRadius = outerRadius * 0.45f // Classic Recharts donut/pie structure
+                    
+                    categories.forEachIndexed { index, category ->
+                        val sweepAngle = category.percentage * 3.6f
+                        if (sweepAngle > 0f) {
+                            val isSelected = index == selectedIndex
+                            val extraScale = if (isSelected) 10.dp.toPx() else 0f
+                            
+                            // Draw the main category slice arc
+                            drawArc(
+                                color = category.color,
+                                startAngle = startAngle,
+                                sweepAngle = sweepAngle,
+                                useCenter = false,
+                                style = Stroke(width = (outerRadius - innerRadius) + extraScale)
+                            )
+                            
+                            // Draw highlight boundary accent if slice selected
+                            if (isSelected) {
+                                drawArc(
+                                    color = category.color.copy(alpha = 0.25f),
+                                    startAngle = startAngle,
+                                    sweepAngle = sweepAngle,
+                                    useCenter = false,
+                                    style = Stroke(width = 10.dp.toPx() + (outerRadius - innerRadius))
+                                )
+                            }
+                            
+                            startAngle += sweepAngle
+                        }
+                    }
+                }
+                
+                // Center Tooltip text
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    if (selectedIndex in categories.indices) {
+                        val activeCategory = categories[selectedIndex]
+                        Text(
+                            text = activeCategory.name,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = activeCategory.color,
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = activeCategory.formattedSize,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = String.format("%.1f%%", activeCategory.percentage),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        Text(
+                            text = "Tap a Slice",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "To Inspect",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Legend
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                categories.forEachIndexed { index, category ->
+                    val isSelected = index == selectedIndex
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(
+                                if (isSelected) category.color.copy(alpha = 0.12f)
+                                else Color.Transparent
+                            )
+                            .clickable {
+                                selectedIndex = if (selectedIndex == index) -1 else index
+                            }
+                            .padding(vertical = 8.dp, horizontal = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(12.dp)
+                                .background(category.color, CircleShape)
+                        )
+                        
+                        Spacer(modifier = Modifier.width(12.dp))
+                        
+                        Text(
+                            text = category.name,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                            color = if (isSelected) category.color else MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.weight(1f)
+                        )
+                        
+                        Column(horizontalAlignment = Alignment.End) {
+                            Text(
+                                text = category.formattedSize,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = String.format("%.1f%%", category.percentage),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun LargeRedundantTempFileWidget(
+    items: List<LargeRedundantTempFile>,
+    onCleanItems: (List<LargeRedundantTempFile>) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    if (items.isEmpty()) return
+
+    val totalSavings = remember(items) { items.sumOf { it.sizeBytes } }
+    val formattedSavings = remember(totalSavings) { ByteFormatting.formatByteCount(totalSavings) }
+    var showConfirmDialog by remember { mutableStateOf(false) }
+    var selectedItemIds by remember { mutableStateOf(items.map { it.id }.toSet()) }
+
+    val haptic = LocalHapticFeedback.current
+
+    val selectedItems = remember(selectedItemIds, items) { items.filter { it.id in selectedItemIds } }
+    val selectedSavings = remember(selectedItems) { selectedItems.sumOf { it.sizeBytes } }
+
+    Card(
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.15f)
+        ),
+        border = CardDefaults.outlinedCardBorder().copy(
+            brush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.error.copy(alpha = 0.4f))
+        ),
+        modifier = modifier.fillMaxWidth().testTag("large_files_cleaner_card")
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .background(MaterialTheme.colorScheme.error.copy(alpha = 0.12f), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Warning,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Large & Redundant Files",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                    Text(
+                        text = "We found ${items.size} oversized, duplicate, or cache files taking up unnecessary space.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            // Scrollable list of files
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 200.dp)
+                    .background(
+                        MaterialTheme.colorScheme.surface.copy(alpha = 0.6f),
+                        RoundedCornerShape(16.dp)
+                    )
+                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
+                    .padding(8.dp)
+            ) {
+                androidx.compose.foundation.lazy.LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(items.size) { index ->
+                        val item = items[index]
+                        val isChecked = item.id in selectedItemIds
+                        
+                        val categoryColor = when (item.category) {
+                            "Large File" -> MaterialTheme.colorScheme.error
+                            "Redundant File" -> MaterialTheme.colorScheme.secondary
+                            else -> MaterialTheme.colorScheme.primary
+                        }
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    selectedItemIds = if (isChecked) {
+                                        selectedItemIds - item.id
+                                    } else {
+                                        selectedItemIds + item.id
+                                    }
+                                }
+                                .padding(vertical = 6.dp, horizontal = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Checkbox(
+                                checked = isChecked,
+                                onCheckedChange = { checked ->
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    selectedItemIds = if (checked) {
+                                        selectedItemIds + item.id
+                                    } else {
+                                        selectedItemIds - item.id
+                                    }
+                                }
+                            )
+
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = item.name,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false)
+                                    )
+                                    
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = categoryColor.copy(alpha = 0.12f),
+                                        border = androidx.compose.foundation.BorderStroke(0.5.dp, categoryColor.copy(alpha = 0.3f))
+                                    ) {
+                                        Text(
+                                            text = item.category,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = categoryColor,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                                Text(
+                                    text = item.filePath,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                    maxLines = 1,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = item.description,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.9f)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Savings and clean button row
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = "Selected for Cleanup",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = ByteFormatting.formatByteCount(selectedSavings),
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+
+                Button(
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        showConfirmDialog = true
+                    },
+                    enabled = selectedItems.isNotEmpty(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.testTag("clean_large_files_btn")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CleaningServices,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Clean Selected", fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+
+    if (showConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { showConfirmDialog = false },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.Warning,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(36.dp)
+                )
+            },
+            title = {
+                Text(
+                    text = "Confirm Permanent Deletion",
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.titleLarge
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "Are you absolutely sure you want to delete the ${selectedItems.size} selected file(s)?",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = "This action is irreversible and will permanently delete these files from your device to free up ${ByteFormatting.formatByteCount(selectedSavings)} of storage.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    
+                    Text(
+                        text = "Files to be deleted:",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                            .padding(8.dp)
+                    ) {
+                        selectedItems.take(3).forEach { file ->
+                            Text(
+                                text = "• ${file.name} (${file.formattedSize})",
+                                style = MaterialTheme.typography.bodySmall,
+                                maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (selectedItems.size > 3) {
+                            Text(
+                                text = "• and ${selectedItems.size - 3} more file(s)...",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showConfirmDialog = false
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onCleanItems(selectedItems)
+                        selectedItemIds = emptySet()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                    modifier = Modifier.testTag("confirm_delete_large_files_btn")
+                ) {
+                    Text("Delete Permanently", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showConfirmDialog = false },
+                    modifier = Modifier.testTag("dismiss_delete_large_files_btn")
+                ) {
+                    Text("Cancel")
+                }
+            },
+            shape = RoundedCornerShape(24.dp)
+        )
+    }
+}
+

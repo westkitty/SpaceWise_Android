@@ -8,7 +8,9 @@ import com.example.data.models.SuggestionType
 import com.example.data.models.StorageTrendPoint
 import com.example.data.models.SmartCleanItem
 import com.example.data.models.SmartCleanType
+import com.example.data.models.LargeRedundantTempFile
 import com.example.data.repository.StorageStatsRepository
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -28,6 +30,9 @@ class DashboardViewModel(private val repository: StorageStatsRepository) : ViewM
     private val _smartCleanItems = MutableStateFlow<List<SmartCleanItem>>(emptyList())
     val smartCleanItems: StateFlow<List<SmartCleanItem>> = _smartCleanItems.asStateFlow()
 
+    private val _largeRedundantTempFiles = MutableStateFlow<List<LargeRedundantTempFile>>(emptyList())
+    val largeRedundantTempFiles: StateFlow<List<LargeRedundantTempFile>> = _largeRedundantTempFiles.asStateFlow()
+
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
@@ -37,12 +42,15 @@ class DashboardViewModel(private val repository: StorageStatsRepository) : ViewM
         viewModelScope.launch {
             _isLoading.value = true
             try {
+                // Add an intentional slight scanning delay so the global progress bar/spinner is beautifully visible
+                delay(1200)
                 val snapshotResult = repository.getStorageSnapshot()
                 _snapshot.value = snapshotResult
                 
                 // Fetch trends and Smart Clean list
                 _storageTrends.value = repository.getStorageTrends()
                 _smartCleanItems.value = repository.getSmartCleanItems()
+                _largeRedundantTempFiles.value = repository.getLargeRedundantTempFiles()
                 
                 // Generate live recommendations based on filesystem scan
                 val suggestionsList = mutableListOf<AdvisorySuggestion>()
@@ -183,6 +191,33 @@ class DashboardViewModel(private val repository: StorageStatsRepository) : ViewM
             
             // Refresh data to instantly show the reclaimed space and updated trend line!
             refreshStorageData()
+        }
+    }
+
+    fun deleteLargeRedundantTempFiles(items: List<LargeRedundantTempFile>) {
+        viewModelScope.launch {
+            _isLoading.value = true
+            try {
+                // Add delay for realism during deletion and storage re-indexing
+                delay(1000)
+                val ids = items.map { it.id }.toSet()
+                repository.markLargeRedundantTempItemsDeleted(ids)
+                
+                // Reclaim space based on file category
+                items.forEach { item ->
+                    val cat = when (item.category) {
+                        "Large File" -> "Downloads & Documents"
+                        "Redundant File" -> "Photos"
+                        else -> "Apps & Games"
+                    }
+                    repository.addReclaimedByCategory(cat, item.sizeBytes)
+                }
+                
+                // Refresh data to instantly show the reclaimed space and updated trend line!
+                refreshStorageData()
+            } finally {
+                _isLoading.value = false
+            }
         }
     }
 }
