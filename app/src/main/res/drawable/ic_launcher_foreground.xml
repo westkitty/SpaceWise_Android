@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    
+    <!-- Top Cylinder Disk -->
+    <path
+        android:fillColor="#00BFA5"
+        android:pathData="M54,28C69.46,28 82,31.58 82,36C82,40.42 69.46,44 54,44C38.54,44 26,40.42 26,36C26,31.58 38.54,28 54,28Z" />
+        
+    <!-- Middle Cylinder Body -->
+    <path
+        android:fillColor="#00796B"
+        android:pathData="M26,36v12c0,4.42 12.54,8 28,8s28,-3.58 28,-8v-12c0,4.42 -12.54,8 -28,8s-28,-3.58 -28,-8z" />
+    <path
+        android:fillColor="#00897B"
+        android:pathData="M54,48C69.46,48 82,51.58 82,56C82,60.42 69.46,64 54,64C38.54,64 26,60.42 26,56C26,51.58 38.54,48 54,48Z" />
+
+    <!-- Bottom Cylinder Body -->
+    <path
+        android:fillColor="#004D40"
+        android:pathData="M26,56v12c0,4.42 12.54,8 28,8s28,-3.58 28,-8v-12c0,4.42 -12.54,8 -28,8s-28,-3.58 -28,-8z" />
+    <path
+        android:fillColor="#00695C"
+        android:pathData="M54,68C69.46,68 82,71.58 82,76C82,80.42 69.46,84 54,84C38.54,84 26,80.42 26,76C26,71.58 38.54,68 54,68Z" />
+
+    <!-- Space Indicator Glow Dot -->
+    <path
+        android:fillColor="#00E676"
+        android:pathData="M54,34c2,0 3.5,0.9 3.5,2s-1.5,2 -3.5,2s-3.5,-0.9 -3.5,-2s1.5,-2 3.5,-2z" />
+</vector>

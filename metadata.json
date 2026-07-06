@@ -1,0 +1,6 @@
+{
+  "name": "SpaceWise",
+  "description": "Privacy-first Android storage management analyzer.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
