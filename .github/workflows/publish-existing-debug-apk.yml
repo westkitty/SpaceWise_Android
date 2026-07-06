@@ -61,37 +61,68 @@ jobs:
         continue-on-error: true
         run: gradle --no-daemon --stacktrace :app:assembleDebug
 
-      - name: Stage or repair APK
+      - name: Select verified APK
         shell: bash
         run: |
-          set -e
+          set +e
           mkdir -p out
-          built_apk=""
-          if find app/build/outputs/apk -type f -name '*.apk' -print -quit >/tmp/apk_path 2>/dev/null; then
-            built_apk="$(cat /tmp/apk_path)"
-          fi
-          if [ -n "$built_apk" ] && [ -s "$built_apk" ]; then
-            echo "Using rebuilt APK: $built_apk"
-            cp "$built_apk" out/SpaceWise-debug.apk
-          else
-            echo "No rebuilt APK found; attempting to repair committed app-debug.apk"
-            test -f app-debug.apk
-            cp app-debug.apk working.apk
-            if zipalign -p -f 4 working.apk aligned.apk; then
-              apksigner sign --ks debug.keystore --ks-pass pass:android --key-pass pass:android --out out/SpaceWise-debug.apk aligned.apk
-            else
-              apksigner sign --ks debug.keystore --ks-pass pass:android --key-pass pass:android --out out/SpaceWise-debug.apk working.apk
+          diag=out/apk-diagnostics.txt
+          : > "$diag"
+          {
+            echo "PWD: $(pwd)"
+            echo "Android home: $ANDROID_HOME"
+            echo "Build tools:"
+            ls -la "$ANDROID_HOME/build-tools/36.0.0" || true
+            echo
+            echo "APK candidates:"
+            find . -type f -name '*.apk' -exec ls -lh {} \; | sort || true
+            echo
+          } >> "$diag" 2>&1
+
+          choose_apk() {
+            candidate="$1"
+            label="$2"
+            [ -s "$candidate" ] || return 1
+            echo "Checking $label: $candidate" | tee -a "$diag"
+            file "$candidate" >> "$diag" 2>&1
+            unzip -t "$candidate" >> "$diag" 2>&1 || return 1
+            apksigner verify --verbose "$candidate" >> "$diag" 2>&1
+            if [ "$?" -eq 0 ]; then
+              cp "$candidate" out/SpaceWise-debug.apk
+              echo "SELECTED verified APK: $candidate" | tee -a "$diag"
+              return 0
             fi
+            echo "Verification failed for $candidate" >> "$diag"
+            return 1
+          }
+
+          for candidate in $(find app/build/outputs -type f -name '*.apk' 2>/dev/null | sort); do
+            choose_apk "$candidate" "rebuilt" && exit 0
+          done
+
+          choose_apk app-debug.apk "committed" && exit 0
+
+          if [ -s app-debug.apk ]; then
+            echo "Trying to align and re-sign committed APK" | tee -a "$diag"
+            cp app-debug.apk working.apk
+            if zipalign -p -f 4 working.apk aligned.apk >> "$diag" 2>&1; then
+              apksigner sign --ks debug.keystore --ks-pass pass:android --key-pass pass:android --out repaired.apk aligned.apk >> "$diag" 2>&1
+            else
+              apksigner sign --ks debug.keystore --ks-pass pass:android --key-pass pass:android --out repaired.apk working.apk >> "$diag" 2>&1
+            fi
+            choose_apk repaired.apk "repaired" && exit 0
           fi
 
-      - name: Verify final APK
-        shell: bash
-        run: |
-          test -s out/SpaceWise-debug.apk
-          file out/SpaceWise-debug.apk
-          unzip -t out/SpaceWise-debug.apk >/dev/null
-          ls -lh out/SpaceWise-debug.apk
-          apksigner verify --verbose out/SpaceWise-debug.apk
+          echo "No installable verified APK could be produced." | tee -a "$diag"
+          exit 1
+
+      - name: Upload diagnostics artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SpaceWise-apk-diagnostics
+          path: out/apk-diagnostics.txt
+          if-no-files-found: warn
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
