@@ -1,5 +1,8 @@
 package com.example.ui.screens
 
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -9,11 +12,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.*
@@ -21,6 +22,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -38,22 +40,46 @@ fun CategoryDetailScreen(
     viewModel: CategoryDetailViewModel,
     onNavigateBack: () -> Unit
 ) {
+    val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
     val mediaItems by viewModel.mediaItems.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
 
     var selectedIds by remember { mutableStateOf(setOf<Long>()) }
     var showDeleteConfirmation by remember { mutableStateOf(false) }
-    
+
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
+
+    val openMediaItem: (MediaItem) -> Unit = { item ->
+        val uriString = item.uriString
+        if (uriString.isNullOrBlank()) {
+            scope.launch { snackbarHostState.showSnackbar("No openable media URI is available for this item.") }
+        } else {
+            try {
+                val uri = Uri.parse(uriString)
+                val mimeType = item.mimeType ?: "*/*"
+                val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(uri, mimeType)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                val chooser = Intent.createChooser(viewIntent, "Open ${item.displayName}").apply {
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                context.startActivity(chooser)
+            } catch (e: ActivityNotFoundException) {
+                scope.launch { snackbarHostState.showSnackbar("No app is available to open ${item.displayName}.") }
+            } catch (e: Exception) {
+                scope.launch { snackbarHostState.showSnackbar("Unable to open ${item.displayName}.") }
+            }
+        }
+    }
 
     LaunchedEffect(categoryName) {
         viewModel.loadMediaForCategory(categoryName)
         selectedIds = emptySet()
     }
 
-    // Calculate sum size of selected files
     val selectedItemsSize = remember(selectedIds, mediaItems) {
         mediaItems.filter { it.id in selectedIds }.sumOf { it.sizeBytes }
     }
@@ -63,16 +89,15 @@ fun CategoryDetailScreen(
             onDismissRequest = { showDeleteConfirmation = false },
             title = {
                 Text(
-                    text = "Confirm Secure Deletion",
+                    text = "Confirm cleanup",
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface
                 )
             },
             text = {
                 Text(
-                    text = "Are you sure you want to permanently delete these ${selectedIds.size} selected items? " +
-                           "This will instantly reclaim ${ByteFormatting.formatByteCount(selectedItemsSize)} of device space. " +
-                           "This operation is safe, offline, and cannot be undone.",
+                    text = "Process these ${selectedIds.size} selected items? " +
+                           "This can reclaim ${ByteFormatting.formatByteCount(selectedItemsSize)} of device space.",
                     style = MaterialTheme.typography.bodyMedium
                 )
             },
@@ -85,11 +110,11 @@ fun CategoryDetailScreen(
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 scope.launch {
                                     val formatted = ByteFormatting.formatByteCount(bytesReclaimed)
-                                    snackbarHostState.showSnackbar("Successfully deleted selected files! Reclaimed $formatted")
+                                    snackbarHostState.showSnackbar("Cleanup completed. Reclaimed $formatted")
                                 }
                             } else {
                                 scope.launch {
-                                    snackbarHostState.showSnackbar("Failed to delete files. Check permissions.")
+                                    snackbarHostState.showSnackbar("Unable to process files. Check permissions.")
                                 }
                             }
                             selectedIds = emptySet()
@@ -98,7 +123,7 @@ fun CategoryDetailScreen(
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
                     modifier = Modifier.testTag("confirm_delete_dialog_btn")
                 ) {
-                    Text("Securely Delete", color = MaterialTheme.colorScheme.onError)
+                    Text("Confirm", color = MaterialTheme.colorScheme.onError)
                 }
             },
             dismissButton = {
@@ -143,9 +168,9 @@ fun CategoryDetailScreen(
                                 Text("Select All", fontWeight = FontWeight.SemiBold)
                             }
                         }
-                        
+
                         IconButton(
-                            onClick = { 
+                            onClick = {
                                 viewModel.loadMediaForCategory(categoryName)
                                 selectedIds = emptySet()
                             },
@@ -194,19 +219,20 @@ fun CategoryDetailScreen(
                         ) {
                             item {
                                 Text(
-                                    text = "Select items to reclaim space:",
+                                    text = "Tap a file to open it. Use checkboxes to select items to reclaim space:",
                                     style = MaterialTheme.typography.titleSmall,
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.padding(bottom = 6.dp)
                                 )
                             }
-                            
+
                             items(mediaItems, key = { it.id }) { item ->
                                 val isSelected = item.id in selectedIds
                                 MediaItemRow(
                                     item = item,
                                     isSelected = isSelected,
+                                    onOpenMedia = openMediaItem,
                                     onSelectedChange = { checked ->
                                         selectedIds = if (checked) {
                                             selectedIds + item.id
@@ -218,7 +244,6 @@ fun CategoryDetailScreen(
                             }
                         }
 
-                        // Floating bottom reclaim action overlay
                         if (selectedIds.isNotEmpty()) {
                             Card(
                                 modifier = Modifier
@@ -255,7 +280,7 @@ fun CategoryDetailScreen(
                                     ) {
                                         Icon(
                                             imageVector = Icons.Default.Delete,
-                                            contentDescription = "Delete",
+                                            contentDescription = "Cleanup",
                                             modifier = Modifier.size(18.dp)
                                         )
                                         Spacer(modifier = Modifier.width(8.dp))
@@ -275,6 +300,7 @@ fun CategoryDetailScreen(
 fun MediaItemRow(
     item: MediaItem,
     isSelected: Boolean,
+    onOpenMedia: (MediaItem) -> Unit,
     onSelectedChange: (Boolean) -> Unit
 ) {
     val haptic = LocalHapticFeedback.current
@@ -287,7 +313,7 @@ fun MediaItemRow(
         modifier = Modifier
             .fillMaxWidth()
             .testTag("media_item_${item.id}")
-            .clickable { triggerSelection(!isSelected) },
+            .clickable { onOpenMedia(item) },
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(
             containerColor = if (isSelected) {
@@ -361,6 +387,12 @@ fun MediaItemRow(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+                Text(
+                    text = "Tap to open",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.SemiBold
+                )
             }
 
             Text(
