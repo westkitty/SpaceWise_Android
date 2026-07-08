@@ -3,7 +3,7 @@ package com.example.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.models.CleanupResult
-import com.example.data.models.ConfidenceLevel
+import com.example.data.models.CleanupStatus
 import com.example.data.models.MediaItem
 import com.example.data.models.MediaKind
 import com.example.data.models.MediaSortMode
@@ -50,8 +50,7 @@ class CategoryDetailViewModel(private val repository: StorageStatsRepository) : 
                 startedAtMillis = started,
                 stage = ScanStage.PERMISSIONS,
                 progressPercent = 10,
-                mediaPermissionGranted = repository.hasMediaPermission(),
-                usagePermissionGranted = repository.hasUsagePermission()
+                note = "Checking Android permissions before MediaStore query."
             )
             try {
                 _scanAudit.value = _scanAudit.value?.copy(stage = ScanStage.MEDIA_QUERY, progressPercent = 35)
@@ -63,6 +62,7 @@ class CategoryDetailViewModel(private val repository: StorageStatsRepository) : 
                     finishedAtMillis = System.currentTimeMillis(),
                     stage = ScanStage.COMPLETE,
                     progressPercent = 100,
+                    mediaPermissionGranted = loaded.isNotEmpty(),
                     note = "Scan complete. Rows come from Android MediaStore; inaccessible app-private data is not inspected."
                 )
             } catch (e: Exception) {
@@ -87,7 +87,7 @@ class CategoryDetailViewModel(private val repository: StorageStatsRepository) : 
             finishedAtMillis = System.currentTimeMillis(),
             stage = ScanStage.CANCELLED,
             progressPercent = 100,
-            confidence = ConfidenceLevel.ESTIMATED
+            note = "Scan cancelled by user before file action."
         )
     }
 
@@ -137,16 +137,18 @@ class CategoryDetailViewModel(private val repository: StorageStatsRepository) : 
 
             val totalBytesReclaimed = itemsToDelete.sumOf { it.sizeBytes }
             try {
-                val results = repository.deleteMediaItemsWithResults(itemsToDelete)
-                _lastCleanupResults.value = results
-                val processedIds = results
-                    .filter { it.status.name == "PROCESSED" }
-                    .map { it.item.id }
-                    .toSet()
-                _mediaItems.value = currentList.filter { it.id !in processedIds }
-                applyFilters()
-                onComplete(processedIds.isNotEmpty(), if (processedIds.isNotEmpty()) totalBytesReclaimed else 0L)
+                val ok = repository.deleteMediaItems(itemsToDelete)
+                val status = if (ok) CleanupStatus.PROCESSED else CleanupStatus.FAILED
+                val message = if (ok) "Processed by Android content resolver." else "No rows were processed."
+                _lastCleanupResults.value = itemsToDelete.map { CleanupResult(it, status, message) }
+                if (ok) {
+                    val processedIds = itemsToDelete.map { it.id }.toSet()
+                    _mediaItems.value = currentList.filter { it.id !in processedIds }
+                    applyFilters()
+                }
+                onComplete(ok, if (ok) totalBytesReclaimed else 0L)
             } catch (e: Exception) {
+                _lastCleanupResults.value = itemsToDelete.map { CleanupResult(it, CleanupStatus.FAILED, "Action failed safely without UI crash.") }
                 onComplete(false, 0L)
             }
         }
