@@ -63,7 +63,11 @@ class CategoryDetailViewModel(private val repository: StorageStatsRepository) : 
                     stage = ScanStage.COMPLETE,
                     progressPercent = 100,
                     mediaPermissionGranted = loaded.isNotEmpty(),
-                    note = "Scan complete. Rows come from Android MediaStore; inaccessible app-private data is not inspected."
+                    note = if (loaded.isEmpty()) {
+                        "Scan completed but no rows were visible. Check permissions, category filters, or Android media indexing."
+                    } else {
+                        "Scan complete. Rows come from Android MediaStore; inaccessible app-private data is not inspected."
+                    }
                 )
             } catch (e: Exception) {
                 _mediaItems.value = emptyList()
@@ -92,7 +96,7 @@ class CategoryDetailViewModel(private val repository: StorageStatsRepository) : 
     }
 
     fun updateSearch(text: String) {
-        query = text
+        query = text.trim()
         applyFilters()
     }
 
@@ -106,19 +110,24 @@ class CategoryDetailViewModel(private val repository: StorageStatsRepository) : 
         applyFilters()
     }
 
+    fun visibleIds(): Set<Long> = _visibleItems.value.map { it.id }.toSet()
+
     private fun applyFilters() {
         val filtered = _mediaItems.value
             .asSequence()
             .filter { item -> kindFilter == null || item.fileKind == kindFilter }
             .filter { item ->
-                query.isBlank() || item.displayName.contains(query, ignoreCase = true) ||
-                    item.mimeType?.contains(query, ignoreCase = true) == true
+                query.isBlank() ||
+                    item.displayName.contains(query, ignoreCase = true) ||
+                    item.mimeType?.contains(query, ignoreCase = true) == true ||
+                    item.sourceCollection.contains(query, ignoreCase = true) ||
+                    item.categoryReason.contains(query, ignoreCase = true)
             }
             .let { seq ->
                 when (sortMode) {
-                    MediaSortMode.LARGEST -> seq.sortedByDescending { it.sizeBytes }
-                    MediaSortMode.NEWEST -> seq.sortedByDescending { it.dateAdded }
-                    MediaSortMode.OLDEST -> seq.sortedBy { it.dateAdded }
+                    MediaSortMode.LARGEST -> seq.sortedWith(compareByDescending<MediaItem> { it.sizeBytes }.thenBy { it.displayName.lowercase() })
+                    MediaSortMode.NEWEST -> seq.sortedWith(compareByDescending<MediaItem> { it.dateAdded }.thenBy { it.displayName.lowercase() })
+                    MediaSortMode.OLDEST -> seq.sortedWith(compareBy<MediaItem> { it.dateAdded }.thenBy { it.displayName.lowercase() })
                     MediaSortMode.NAME -> seq.sortedBy { it.displayName.lowercase() }
                 }
             }
@@ -129,7 +138,8 @@ class CategoryDetailViewModel(private val repository: StorageStatsRepository) : 
     fun deleteSelectedItems(selectedIds: Set<Long>, onComplete: (Boolean, Long) -> Unit) {
         viewModelScope.launch {
             val currentList = _mediaItems.value
-            val itemsToDelete = currentList.filter { it.id in selectedIds }
+            val visibleSelectedIds = selectedIds.intersect(visibleIds())
+            val itemsToDelete = currentList.filter { it.id in visibleSelectedIds }
             if (itemsToDelete.isEmpty()) {
                 onComplete(false, 0L)
                 return@launch
