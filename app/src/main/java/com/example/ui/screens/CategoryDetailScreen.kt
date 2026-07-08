@@ -5,9 +5,11 @@ import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -31,6 +33,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.data.models.ByteFormatting
+import com.example.data.models.CleanupStatus
 import com.example.data.models.MediaItem
 import com.example.data.models.MediaKind
 import com.example.data.models.MediaSortMode
@@ -63,38 +66,54 @@ fun CategoryDetailScreen(
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
-    fun startViewIntent(item: MediaItem) {
+    LaunchedEffect(categoryName) {
+        searchText = ""
+        selectedKind = null
+        selectedSortMode = MediaSortMode.LARGEST
+        selectedIds = emptySet()
+        viewModel.updateSearch("")
+        viewModel.updateKindFilter(null)
+        viewModel.updateSortMode(MediaSortMode.LARGEST)
+        viewModel.loadMediaForCategory(categoryName)
+    }
+
+    LaunchedEffect(visibleItems) {
+        val visibleIds = visibleItems.map { it.id }.toSet()
+        selectedIds = selectedIds.intersect(visibleIds)
+    }
+
+    fun openItem(item: MediaItem) {
         val uriString = item.uriString
         if (uriString.isNullOrBlank()) {
-            scope.launch { snackbarHostState.showSnackbar("No openable media URI is available for this item.") }
+            scope.launch { snackbarHostState.showSnackbar("This item has no openable URI.") }
             return
         }
         try {
             val uri = Uri.parse(uriString)
-            val mimeType = item.mimeType ?: "*/*"
             val viewIntent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, mimeType)
+                setDataAndType(uri, item.mimeType ?: "*/*")
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
-            val chooser = Intent.createChooser(viewIntent, "Open ${item.displayName}").apply {
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-            context.startActivity(chooser)
+            context.startActivity(Intent.createChooser(viewIntent, "Open ${item.displayName}"))
         } catch (e: ActivityNotFoundException) {
-            scope.launch { snackbarHostState.showSnackbar("No app is available to open ${item.displayName}. Try Share instead.") }
+            scope.launch { snackbarHostState.showSnackbar("No installed app can open this file type.") }
         } catch (e: Exception) {
-            scope.launch { snackbarHostState.showSnackbar("Unable to open ${item.displayName}. It may have moved since the scan.") }
+            scope.launch { snackbarHostState.showSnackbar("Could not open this item. Rescan if it moved.") }
         }
     }
 
     fun shareItem(item: MediaItem) {
         val uriString = item.uriString
         if (uriString.isNullOrBlank()) {
-            scope.launch { snackbarHostState.showSnackbar("No shareable media URI is available for this item.") }
+            scope.launch { snackbarHostState.showSnackbar("This item has no shareable URI.") }
+            return
+        }
+        val uri = Uri.parse(uriString)
+        if (uri.scheme == "file") {
+            scope.launch { snackbarHostState.showSnackbar("This legacy file path cannot be safely shared by Android. Open it instead.") }
             return
         }
         try {
-            val uri = Uri.parse(uriString)
             val shareIntent = Intent(Intent.ACTION_SEND).apply {
                 type = item.mimeType ?: "*/*"
                 putExtra(Intent.EXTRA_STREAM, uri)
@@ -102,29 +121,29 @@ fun CategoryDetailScreen(
             }
             context.startActivity(Intent.createChooser(shareIntent, "Share ${item.displayName}"))
         } catch (e: Exception) {
-            scope.launch { snackbarHostState.showSnackbar("Unable to share ${item.displayName}.") }
+            scope.launch { snackbarHostState.showSnackbar("Could not share this item.") }
         }
     }
 
-    LaunchedEffect(categoryName) {
-        viewModel.loadMediaForCategory(categoryName)
-        selectedIds = emptySet()
-    }
-
-    val selectedItemsSize = remember(selectedIds, mediaItems) {
-        mediaItems.filter { it.id in selectedIds }.sumOf { it.sizeBytes }
+    val selectedItemsSize = remember(selectedIds, visibleItems) {
+        visibleItems.filter { it.id in selectedIds }.sumOf { it.sizeBytes }
     }
 
     if (showCleanupConfirmation) {
         AlertDialog(
             onDismissRequest = { showCleanupConfirmation = false },
-            title = { Text("Review selected items", fontWeight = FontWeight.Bold) },
+            title = { Text("Review visible selection", fontWeight = FontWeight.Bold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Selected: ${selectedIds.size} items")
-                    Text("Possible space change: ${ByteFormatting.formatByteCount(selectedItemsSize)}")
+                    Text("Selected visible items: ${selectedIds.size}")
+                    Text("Estimated space: ${ByteFormatting.formatByteCount(selectedItemsSize)}")
                     Text(
-                        text = "This is a dry-run summary before action. Files can disappear or require Android confirmation between scan and action.",
+                        "Filters and search are respected. Hidden rows are not included.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        "Android may still require confirmation or deny access if a file moved after the scan.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -135,24 +154,20 @@ fun CategoryDetailScreen(
                     onClick = {
                         showCleanupConfirmation = false
                         viewModel.deleteSelectedItems(selectedIds) { success, bytesReclaimed ->
+                            selectedIds = emptySet()
                             if (success) {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                scope.launch {
-                                    snackbarHostState.showSnackbar("Action completed. ${ByteFormatting.formatByteCount(bytesReclaimed)} processed.")
-                                }
+                                scope.launch { snackbarHostState.showSnackbar("Processed ${ByteFormatting.formatByteCount(bytesReclaimed)}.") }
                             } else {
-                                scope.launch { snackbarHostState.showSnackbar("No files were processed. Review permissions or stale scan state.") }
+                                scope.launch { snackbarHostState.showSnackbar("No visible selected files were processed.") }
                             }
-                            selectedIds = emptySet()
                         }
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
                     modifier = Modifier.testTag("confirm_delete_dialog_btn")
                 ) { Text("Proceed", color = MaterialTheme.colorScheme.onError) }
             },
-            dismissButton = {
-                TextButton(onClick = { showCleanupConfirmation = false }) { Text("Cancel") }
-            },
+            dismissButton = { TextButton(onClick = { showCleanupConfirmation = false }) { Text("Cancel") } },
             shape = RoundedCornerShape(20.dp)
         )
     }
@@ -161,7 +176,7 @@ fun CategoryDetailScreen(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
-                title = { Text(categoryName, fontWeight = FontWeight.Bold) },
+                title = { Text(categoryName, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack, modifier = Modifier.testTag("back_button")) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Go back")
@@ -170,14 +185,14 @@ fun CategoryDetailScreen(
                 actions = {
                     if (categoryName != "System & Other") {
                         if (selectedIds.isNotEmpty()) {
-                            TextButton(onClick = { selectedIds = emptySet() }) { Text("Deselect") }
+                            TextButton(onClick = { selectedIds = emptySet() }) { Text("Clear") }
                         } else if (visibleItems.isNotEmpty()) {
-                            TextButton(onClick = { selectedIds = visibleItems.map { it.id }.toSet() }) { Text("Select visible") }
+                            TextButton(onClick = { selectedIds = visibleItems.map { it.id }.toSet() }) { Text("Select") }
                         }
                         IconButton(
                             onClick = {
-                                viewModel.loadMediaForCategory(categoryName)
                                 selectedIds = emptySet()
+                                viewModel.loadMediaForCategory(categoryName)
                             },
                             modifier = Modifier.testTag("refresh_button")
                         ) { Icon(Icons.Default.Refresh, contentDescription = "Rescan files") }
@@ -204,12 +219,13 @@ fun CategoryDetailScreen(
                             verticalArrangement = Arrangement.spacedBy(if (compactMode) 6.dp else 10.dp),
                             contentPadding = PaddingValues(top = 12.dp, bottom = 24.dp)
                         ) {
-                            item { ScanAuditCard(scanAudit, mediaItems.size, visibleItems.size, onCancel = { viewModel.cancelScan() }) }
+                            item { ScanAuditCard(scanAudit, mediaItems.size, visibleItems.size, isLoading, onCancel = { viewModel.cancelScan() }) }
                             item {
                                 FileControls(
                                     searchText = searchText,
                                     onSearchChange = {
                                         searchText = it
+                                        selectedIds = emptySet()
                                         viewModel.updateSearch(it)
                                     },
                                     selectedSortMode = selectedSortMode,
@@ -220,6 +236,7 @@ fun CategoryDetailScreen(
                                     selectedKind = selectedKind,
                                     onKindChange = {
                                         selectedKind = it
+                                        selectedIds = emptySet()
                                         viewModel.updateKindFilter(it)
                                     },
                                     compactMode = compactMode,
@@ -228,30 +245,30 @@ fun CategoryDetailScreen(
                             }
                             item {
                                 Text(
-                                    text = "Tap a file to open it. Use checkboxes to select. Each row lists why it appears here.",
+                                    "Tap a row to open. Use the checkbox to select. Search/filter changes clear selection.",
                                     style = MaterialTheme.typography.titleSmall,
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.padding(bottom = 6.dp)
                                 )
                             }
-
                             items(visibleItems, key = { it.id }) { item ->
-                                val isSelected = item.id in selectedIds
                                 MediaItemRow(
                                     item = item,
-                                    isSelected = isSelected,
+                                    isSelected = item.id in selectedIds,
                                     compact = compactMode,
-                                    onOpenMedia = { startViewIntent(it) },
+                                    onOpenMedia = { openItem(it) },
                                     onShareMedia = { shareItem(it) },
                                     onSelectedChange = { checked ->
                                         selectedIds = if (checked) selectedIds + item.id else selectedIds - item.id
                                     }
                                 )
                             }
-
+                            if (visibleItems.isEmpty()) {
+                                item { NoFilteredResultsCard() }
+                            }
                             if (cleanupResults.isNotEmpty()) {
-                                item { CleanupResultsCard(cleanupResults.size, cleanupResults.groupBy { it.status }.mapValues { it.value.size }) }
+                                item { CleanupResultsCard(cleanupResults.groupBy { it.status }.mapValues { it.value.size }) }
                             }
                         }
 
@@ -265,11 +282,11 @@ fun CategoryDetailScreen(
                                 Row(
                                     modifier = Modifier.padding(16.dp),
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                                 ) {
                                     Column(modifier = Modifier.weight(1f)) {
-                                        Text("${selectedIds.size} files selected", fontWeight = FontWeight.Bold)
-                                        Text("Dry-run estimate: ${ByteFormatting.formatByteCount(selectedItemsSize)}")
+                                        Text("${selectedIds.size} visible selected", fontWeight = FontWeight.Bold)
+                                        Text("Estimate: ${ByteFormatting.formatByteCount(selectedItemsSize)}")
                                     }
                                     Button(
                                         onClick = { showCleanupConfirmation = true },
@@ -299,30 +316,23 @@ fun LoadingScanState(scanAudit: ScanAuditInfo?, onCancel: () -> Unit) {
         CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
         Spacer(modifier = Modifier.height(16.dp))
         Text(scanAudit?.stage?.label ?: "Scanning", fontWeight = FontWeight.Bold)
+        Text(scanAudit?.note ?: "Reading Android MediaStore.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(modifier = Modifier.height(8.dp))
         Button(onClick = onCancel) { Text("Cancel scan") }
     }
 }
 
 @Composable
-fun ScanAuditCard(scanAudit: ScanAuditInfo?, totalCount: Int, visibleCount: Int, onCancel: () -> Unit) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        border = CardDefaults.outlinedCardBorder()
-    ) {
+fun ScanAuditCard(scanAudit: ScanAuditInfo?, totalCount: Int, visibleCount: Int, isLoading: Boolean, onCancel: () -> Unit) {
+    val durationText = scanAudit?.durationMillis?.let { " • ${it / 1000.0}s" } ?: ""
+    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), border = CardDefaults.outlinedCardBorder()) {
         Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("Scan transparency", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-            Text("Session: ${scanAudit?.sessionId ?: "not started"}", style = MaterialTheme.typography.bodySmall)
-            Text("Stage: ${scanAudit?.stage?.label ?: "Idle"} • ${scanAudit?.progressPercent ?: 0}%", style = MaterialTheme.typography.bodySmall)
+            Text("Scan status", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            Text("${scanAudit?.stage?.label ?: "Idle"} • ${scanAudit?.progressPercent ?: 0}%$durationText", style = MaterialTheme.typography.bodySmall)
             Text("Rows: $visibleCount visible / $totalCount scanned", style = MaterialTheme.typography.bodySmall)
             Text(scanAudit?.note ?: "MediaStore only. No private app storage is inspected or uploaded.", style = MaterialTheme.typography.bodySmall)
-            if (scanAudit?.isStale == true) {
-                Text("Scan may be stale. Rescan before acting.", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
-            }
-            if (scanAudit?.stage?.name != "COMPLETE") {
-                TextButton(onClick = onCancel) { Text("Cancel current scan") }
-            }
+            if (scanAudit?.isStale == true) Text("Scan may be stale. Rescan before acting.", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+            if (isLoading) TextButton(onClick = onCancel) { Text("Cancel scan") }
         }
     }
 }
@@ -362,9 +372,12 @@ fun FileControls(
             }
             FilterChip(selected = compactMode, onClick = { onCompactModeChange(!compactMode) }, label = { Text("Dense") })
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+        ) {
             FilterChip(selected = selectedKind == null, onClick = { onKindChange(null) }, label = { Text("All") })
-            MediaKind.values().take(4).forEach { kind ->
+            MediaKind.values().forEach { kind ->
                 FilterChip(selected = selectedKind == kind, onClick = { onKindChange(kind) }, label = { Text(kind.label) })
             }
         }
@@ -385,37 +398,19 @@ fun MediaItemRow(
         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
         onSelectedChange(checked)
     }
-
     Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag("media_item_${item.id}")
-            .semantics { contentDescription = "Open ${item.displayName}. Checkbox selects it." }
-            .clickable { onOpenMedia(item) },
+        modifier = Modifier.fillMaxWidth().testTag("media_item_${item.id}").semantics { contentDescription = "Open ${item.displayName}. Checkbox selects it." }.clickable { onOpenMedia(item) },
         shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surface
-        ),
-        border = if (isSelected) {
-            CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary))
-        } else {
-            CardDefaults.outlinedCardBorder()
-        }
+        colors = CardDefaults.cardColors(containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surface),
+        border = if (isSelected) CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary)) else CardDefaults.outlinedCardBorder()
     ) {
-        Row(
-            modifier = Modifier.padding(if (compact) 8.dp else 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
+        Row(modifier = Modifier.padding(if (compact) 8.dp else 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Checkbox(
                 checked = isSelected,
                 onCheckedChange = triggerSelection,
                 modifier = Modifier.size(48.dp).semantics { contentDescription = "Select ${item.displayName}" }.testTag("checkbox_${item.id}")
             )
-            Box(
-                modifier = Modifier.size(if (compact) 34.dp else 40.dp).background(MaterialTheme.colorScheme.surfaceVariant, CircleShape),
-                contentAlignment = Alignment.Center
-            ) {
+            Box(modifier = Modifier.size(if (compact) 34.dp else 40.dp).background(MaterialTheme.colorScheme.surfaceVariant, CircleShape), contentAlignment = Alignment.Center) {
                 Icon(Icons.AutoMirrored.Filled.InsertDriveFile, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
             }
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -424,11 +419,11 @@ fun MediaItemRow(
                 Text("${item.confidence.label}: ${item.categoryReason}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = if (compact) 1 else 2, overflow = TextOverflow.Ellipsis)
                 if (!compact) {
                     val meta = listOfNotNull(item.mimeType, item.formattedDuration, item.formattedResolution, item.sourceCollection).joinToString(" • ")
-                    Text(meta, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (meta.isNotBlank()) Text(meta, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("Tap to open", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
-                    TextButton(onClick = { onShareMedia(item) }, contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp)) { Text("Share") }
+                    TextButton(onClick = { onShareMedia(item) }, contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)) { Text("Share") }
                 }
             }
         }
@@ -436,11 +431,20 @@ fun MediaItemRow(
 }
 
 @Composable
-fun CleanupResultsCard(total: Int, counts: Map<com.example.data.models.CleanupStatus, Int>) {
+fun NoFilteredResultsCard() {
+    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), border = CardDefaults.outlinedCardBorder()) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("No matches", fontWeight = FontWeight.Bold)
+            Text("Adjust search or filters. The scan still contains files outside this view.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+fun CleanupResultsCard(counts: Map<CleanupStatus, Int>) {
     Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), border = CardDefaults.outlinedCardBorder()) {
         Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text("Last action results", fontWeight = FontWeight.Bold)
-            Text("$total item results recorded.")
             counts.forEach { (status, count) -> Text("${status.name.lowercase()}: $count", style = MaterialTheme.typography.bodySmall) }
         }
     }
@@ -448,11 +452,7 @@ fun CleanupResultsCard(total: Int, counts: Map<com.example.data.models.CleanupSt
 
 @Composable
 fun SystemAndOtherExplanation() {
-    Column(
-        modifier = Modifier.fillMaxSize().padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Spacer(modifier = Modifier.height(32.dp))
         Box(modifier = Modifier.size(72.dp).background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f), CircleShape), contentAlignment = Alignment.Center) {
             Icon(Icons.Default.Shield, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(40.dp))
@@ -477,11 +477,7 @@ fun SystemAndOtherExplanation() {
 
 @Composable
 fun EmptyMediaState(categoryName: String) {
-    Column(
-        modifier = Modifier.fillMaxSize().padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
+    Column(modifier = Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Spacer(modifier = Modifier.height(48.dp))
         Icon(Icons.Default.Description, contentDescription = "No items found", modifier = Modifier.size(64.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
         Text("No Files Detected", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
