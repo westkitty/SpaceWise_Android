@@ -21,22 +21,22 @@ object PermissionUtils {
     fun getMediaAccess(context: Context): MediaAccess {
         return when {
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE -> {
-                val hasImages = isGranted(context, Manifest.permission.READ_MEDIA_IMAGES)
-                val hasVideos = isGranted(context, Manifest.permission.READ_MEDIA_VIDEO)
-                val hasAudio = isGranted(context, Manifest.permission.READ_MEDIA_AUDIO)
-                val hasSelectedVisual = isGranted(context, Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
+                val hasImages = hasFullImagePermission(context)
+                val hasVideos = hasFullVideoPermission(context)
+                val hasAudio = hasAudioPermission(context)
+                val hasSelectedVisual = hasSelectedVisualPermission(context)
 
                 when {
                     hasImages && hasVideos && hasAudio -> MediaAccess.FULL
-                    hasSelectedVisual -> MediaAccess.PARTIAL_VISUAL
+                    hasSelectedVisual || hasImages || hasVideos -> MediaAccess.PARTIAL_VISUAL
                     else -> MediaAccess.NONE
                 }
             }
 
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> {
-                val hasImages = isGranted(context, Manifest.permission.READ_MEDIA_IMAGES)
-                val hasVideos = isGranted(context, Manifest.permission.READ_MEDIA_VIDEO)
-                val hasAudio = isGranted(context, Manifest.permission.READ_MEDIA_AUDIO)
+                val hasImages = hasFullImagePermission(context)
+                val hasVideos = hasFullVideoPermission(context)
+                val hasAudio = hasAudioPermission(context)
                 if (hasImages && hasVideos && hasAudio) MediaAccess.FULL else MediaAccess.NONE
             }
 
@@ -50,15 +50,11 @@ object PermissionUtils {
         }
     }
 
-    /**
-     * Existing broad storage scans must only run with full media access.
-     * Partial Android 14 visual access is deliberately not treated as complete device visibility.
-     */
-    fun hasMediaPermissions(context: Context): Boolean = getMediaAccess(context) == MediaAccess.FULL
+    fun hasMediaPermissions(context: Context): Boolean = getMediaAccess(context) != MediaAccess.NONE
 
-    fun hasFullMediaPermissions(context: Context): Boolean = hasMediaPermissions(context)
+    fun hasFullMediaPermissions(context: Context): Boolean = getMediaAccess(context) == MediaAccess.FULL
 
-    fun hasImagePermission(context: Context): Boolean {
+    fun hasFullImagePermission(context: Context): Boolean {
         return when {
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU ->
                 isGranted(context, Manifest.permission.READ_MEDIA_IMAGES)
@@ -66,13 +62,28 @@ object PermissionUtils {
         }
     }
 
-    fun hasVideoPermission(context: Context): Boolean {
+    fun hasFullVideoPermission(context: Context): Boolean {
         return when {
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU ->
                 isGranted(context, Manifest.permission.READ_MEDIA_VIDEO)
             else -> isGranted(context, Manifest.permission.READ_EXTERNAL_STORAGE)
         }
     }
+
+    fun hasSelectedVisualPermission(context: Context): Boolean {
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
+            isGranted(context, Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
+    }
+
+    fun hasImageReadAccess(context: Context): Boolean =
+        hasFullImagePermission(context) || hasSelectedVisualPermission(context)
+
+    fun hasVideoReadAccess(context: Context): Boolean =
+        hasFullVideoPermission(context) || hasSelectedVisualPermission(context)
+
+    fun hasImagePermission(context: Context): Boolean = hasFullImagePermission(context)
+
+    fun hasVideoPermission(context: Context): Boolean = hasFullVideoPermission(context)
 
     fun hasAudioPermission(context: Context): Boolean {
         return when {
