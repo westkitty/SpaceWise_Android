@@ -44,10 +44,10 @@ Historical charts remain empty until real snapshots are persisted over time. Emp
 | Audio | Audio permission | Hidden or incomplete |
 | Selected Android 14 media | Partial visual access | Reported as partial, not full-device visibility |
 | Application sizes and usage | Usage Access | Unavailable |
-| Installed package inventory | Package visibility | Limited |
+| Installed package inventory | Android package visibility | Limited to visible packages |
 | Delete media | Android-mediated delete access | May fail or require confirmation |
 
-SpaceWise currently uses `QUERY_ALL_PACKAGES` for internal/MVP package analysis. This permission requires a valid policy justification for Google Play distribution. A production Play Store build should narrow package visibility or use an approved declaration.
+SpaceWise deliberately does not request `QUERY_ALL_PACKAGES`. App analysis is therefore limited to packages Android exposes to the application. This trades exhaustive inventory for lower policy and privacy risk.
 
 ## Build requirements
 
