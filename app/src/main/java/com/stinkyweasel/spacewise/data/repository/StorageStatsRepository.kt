@@ -19,9 +19,9 @@ import android.provider.MediaStore
 import androidx.compose.ui.graphics.Color
 import com.stinkyweasel.spacewise.data.models.AppStorageInfo
 import com.stinkyweasel.spacewise.data.models.CategoryAccessState
+import com.stinkyweasel.spacewise.data.models.CategoryStorage
 import com.stinkyweasel.spacewise.data.models.DataAvailability
 import com.stinkyweasel.spacewise.data.models.DataConfidence
-import com.stinkyweasel.spacewise.data.models.CategoryStorage
 import com.stinkyweasel.spacewise.data.models.LargeRedundantTempFile
 import com.stinkyweasel.spacewise.data.models.MediaItem
 import com.stinkyweasel.spacewise.data.models.RawStorageCategory
@@ -30,15 +30,13 @@ import com.stinkyweasel.spacewise.data.models.StorageCategoryMath
 import com.stinkyweasel.spacewise.data.models.StorageSnapshot
 import com.stinkyweasel.spacewise.data.models.StorageTrendPoint
 import com.stinkyweasel.spacewise.utils.PermissionUtils
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 class StorageStatsRepository(private val context: Context) {
 
-    /*
-     * Compatibility methods retained for existing UI wiring. The hardened application does not
-     * simulate reclaimed storage, fabricated cleanup records, or retrospective history.
-     */
+    // Compatibility-only APIs. The hardened build never fabricates cleanup findings or savings.
     fun getReclaimedBytesOffset(): Long = 0L
     fun addReclaimedBytes(bytes: Long) = Unit
     fun getReclaimedByCategory(categoryName: String): Long = 0L
@@ -54,7 +52,7 @@ class StorageStatsRepository(private val context: Context) {
     suspend fun getStorageSnapshot(): StorageSnapshot = withContext(Dispatchers.IO) {
         val statFs = try {
             StatFs(Environment.getDataDirectory().path)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             return@withContext StorageSnapshot(0L, 0L, 0L, emptyList())
         }
 
@@ -62,139 +60,116 @@ class StorageStatsRepository(private val context: Context) {
         val freeBytes = statFs.availableBytes.coerceIn(0L, totalBytes)
         val usedBytes = (totalBytes - freeBytes).coerceAtLeast(0L)
 
-        val photoSize = if (PermissionUtils.hasImagePermission(context)) {
-            getMediaCategorySize(MediaStore.Images.Media.EXTERNAL_CONTENT_URI)
-        } else 0L
-
-        val videoSize = if (PermissionUtils.hasVideoPermission(context)) {
-            getMediaCategorySize(MediaStore.Video.Media.EXTERNAL_CONTENT_URI)
-        } else 0L
-
-        val audioSize = if (PermissionUtils.hasAudioPermission(context)) {
-            getMediaCategorySize(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI)
-        } else 0L
-
-        val downloadsSize = if (hasAnyDocumentVisibility()) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                getMediaCategorySize(MediaStore.Downloads.EXTERNAL_CONTENT_URI)
-            } else {
-                getLegacyDownloadsSize()
-            }
-        } else 0L
-
-        val appSize = if (PermissionUtils.hasUsageStatsPermission(context)) {
-            getAppsTotalStorageSize()
-        } else 0L
-
         val rawCategories = listOf(
-            RawStorageCategory("Apps & Games", appSize, 0xFF00BFA5L),
-            RawStorageCategory("Photos", photoSize, 0xFF4CAF50L),
-            RawStorageCategory("Videos", videoSize, 0xFF2196F3L),
-            RawStorageCategory("Audio & Music", audioSize, 0xFFFF9800L),
-            RawStorageCategory("Downloads & Documents", downloadsSize, 0xFF795548L)
+            RawStorageCategory(
+                "Apps & Games",
+                if (PermissionUtils.hasUsageStatsPermission(context)) getAppsTotalStorageSize() else 0L,
+                0xFF00BFA5L
+            ),
+            RawStorageCategory(
+                "Photos",
+                if (PermissionUtils.hasImagePermission(context)) {
+                    getMediaCategorySize(MediaStore.Images.Media.EXTERNAL_CONTENT_URI)
+                } else 0L,
+                0xFF4CAF50L
+            ),
+            RawStorageCategory(
+                "Videos",
+                if (PermissionUtils.hasVideoPermission(context)) {
+                    getMediaCategorySize(MediaStore.Video.Media.EXTERNAL_CONTENT_URI)
+                } else 0L,
+                0xFF2196F3L
+            ),
+            RawStorageCategory(
+                "Audio & Music",
+                if (PermissionUtils.hasAudioPermission(context)) {
+                    getMediaCategorySize(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI)
+                } else 0L,
+                0xFFFF9800L
+            ),
+            RawStorageCategory(
+                "Downloads & Documents",
+                if (hasAnyDocumentVisibility()) getDownloadsSize() else 0L,
+                0xFF795548L
+            )
         )
 
         val categories = StorageCategoryMath.buildBreakdown(usedBytes, rawCategories).map { value ->
             val access = getCategoryAccessState(value.name)
-            val confidence = when (value.name) {
-                "Apps & Games" -> if (access == CategoryAccessState.AVAILABLE) {
-                    DataConfidence.PACKAGE_STATS_MEASURED
-                } else {
-                    DataConfidence.UNAVAILABLE
-                }
-                "Photos", "Videos", "Audio & Music", "Downloads & Documents" -> when (access) {
-                    CategoryAccessState.AVAILABLE -> DataConfidence.MEDIASTORE_MEASURED
-                    CategoryAccessState.PARTIAL -> DataConfidence.PARTIAL
-                    else -> DataConfidence.UNAVAILABLE
-                }
-                "System & Other" -> DataConfidence.ESTIMATED
-                else -> DataConfidence.UNAVAILABLE
-            }
             CategoryStorage(
                 name = value.name,
                 bytes = value.bytes,
                 color = Color(value.colorArgb),
                 percentage = value.percentage,
-                confidence = confidence,
-                availability = when (access) {
-                    CategoryAccessState.AVAILABLE -> DataAvailability.AVAILABLE
-                    CategoryAccessState.PARTIAL -> DataAvailability.PARTIAL
-                    CategoryAccessState.PERMISSION_REQUIRED -> DataAvailability.PERMISSION_REQUIRED
-                    CategoryAccessState.QUERY_FAILED -> DataAvailability.QUERY_FAILED
-                    CategoryAccessState.UNSUPPORTED -> DataAvailability.UNSUPPORTED
-                }
+                confidence = confidenceFor(value.name, access),
+                availability = availabilityFor(access)
             )
         }
 
         StorageSnapshot(totalBytes, usedBytes, freeBytes, categories)
     }
 
-    suspend fun getTopAppsByStorageSize(limit: Int = 30): List<AppStorageInfo> = withContext(Dispatchers.IO) {
-        if (!PermissionUtils.hasUsageStatsPermission(context)) return@withContext emptyList()
-
-        val packageManager = context.packageManager
-        val packages = packageManager.getInstalledApplications(PackageManager.GET_META_DATA)
-        val storageStats = context.getSystemService(Context.STORAGE_STATS_SERVICE) as? StorageStatsManager
-            ?: return@withContext emptyList()
-        val usageStats = context.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager
-
-        val endTime = System.currentTimeMillis()
-        val startTime = endTime - ONE_YEAR_MS
-        val usageMap = usageStats
-            ?.queryUsageStats(UsageStatsManager.INTERVAL_BEST, startTime, endTime)
-            ?.associate { stats ->
-                val lastUsed = maxOf(
-                    stats.lastTimeUsed,
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) stats.lastTimeVisible else 0L,
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) stats.lastTimeForegroundServiceUsed else 0L
-                )
-                stats.packageName to lastUsed
-            }
-            .orEmpty()
-
-        packages.mapNotNull { app ->
-            val size = queryAppSize(storageStats, app) ?: return@mapNotNull null
-            AppStorageInfo(
-                packageName = app.packageName,
-                appName = app.loadLabel(packageManager).toString(),
-                sizeBytes = size,
-                lastUsedTimestamp = usageMap[app.packageName]?.takeIf { it > 0L },
-                icon = getBoundedIcon(packageManager, app)
-            )
-        }.sortedByDescending { it.sizeBytes }.take(limit)
-    }
-
-    fun getCategoryAccessState(categoryName: String): CategoryAccessState {
-        return when (categoryName) {
-            "Apps & Games" -> if (PermissionUtils.hasUsageStatsPermission(context)) {
-                CategoryAccessState.AVAILABLE
-            } else {
-                CategoryAccessState.PERMISSION_REQUIRED
-            }
-            "Photos" -> when {
-                PermissionUtils.hasImagePermission(context) -> CategoryAccessState.AVAILABLE
-                PermissionUtils.getMediaAccess(context) == PermissionUtils.MediaAccess.PARTIAL_VISUAL -> CategoryAccessState.PARTIAL
-                else -> CategoryAccessState.PERMISSION_REQUIRED
-            }
-            "Videos" -> when {
-                PermissionUtils.hasVideoPermission(context) -> CategoryAccessState.AVAILABLE
-                PermissionUtils.getMediaAccess(context) == PermissionUtils.MediaAccess.PARTIAL_VISUAL -> CategoryAccessState.PARTIAL
-                else -> CategoryAccessState.PERMISSION_REQUIRED
-            }
-            "Audio & Music" -> if (PermissionUtils.hasAudioPermission(context)) {
-                CategoryAccessState.AVAILABLE
-            } else {
-                CategoryAccessState.PERMISSION_REQUIRED
-            }
-            "Downloads & Documents" -> if (hasAnyDocumentVisibility()) {
-                CategoryAccessState.AVAILABLE
-            } else {
-                CategoryAccessState.PERMISSION_REQUIRED
-            }
-            "System & Other" -> CategoryAccessState.UNSUPPORTED
-            else -> CategoryAccessState.UNSUPPORTED
+    fun getCategoryAccessState(categoryName: String): CategoryAccessState = when (categoryName) {
+        "Apps & Games" -> if (PermissionUtils.hasUsageStatsPermission(context)) {
+            CategoryAccessState.AVAILABLE
+        } else {
+            CategoryAccessState.PERMISSION_REQUIRED
         }
+
+        "Photos" -> visualAccessState(PermissionUtils.hasImagePermission(context))
+        "Videos" -> visualAccessState(PermissionUtils.hasVideoPermission(context))
+        "Audio & Music" -> if (PermissionUtils.hasAudioPermission(context)) {
+            CategoryAccessState.AVAILABLE
+        } else {
+            CategoryAccessState.PERMISSION_REQUIRED
+        }
+
+        "Downloads & Documents" -> if (hasAnyDocumentVisibility()) {
+            CategoryAccessState.AVAILABLE
+        } else {
+            CategoryAccessState.PERMISSION_REQUIRED
+        }
+
+        "System & Other" -> CategoryAccessState.UNSUPPORTED
+        else -> CategoryAccessState.UNSUPPORTED
     }
+
+    suspend fun getTopAppsByStorageSize(limit: Int = 30): List<AppStorageInfo> =
+        withContext(Dispatchers.IO) {
+            if (!PermissionUtils.hasUsageStatsPermission(context)) return@withContext emptyList()
+
+            val packageManager = context.packageManager
+            val manager = context.getSystemService(Context.STORAGE_STATS_SERVICE) as? StorageStatsManager
+                ?: return@withContext emptyList()
+            val usageManager = context.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager
+            val now = System.currentTimeMillis()
+            val usageByPackage = usageManager
+                ?.queryUsageStats(UsageStatsManager.INTERVAL_BEST, now - ONE_YEAR_MS, now)
+                ?.associate { stats ->
+                    stats.packageName to maxOf(
+                        stats.lastTimeUsed,
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) stats.lastTimeVisible else 0L,
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            stats.lastTimeForegroundServiceUsed
+                        } else 0L
+                    )
+                }
+                .orEmpty()
+
+            packageManager.getInstalledApplications(PackageManager.GET_META_DATA)
+                .mapNotNull { app ->
+                    val size = queryAppSize(manager, app) ?: return@mapNotNull null
+                    AppStorageInfo(
+                        packageName = app.packageName,
+                        appName = app.loadLabel(packageManager).toString(),
+                        sizeBytes = size,
+                        lastUsedTimestamp = usageByPackage[app.packageName]?.takeIf { it > 0L },
+                        icon = getBoundedIcon(packageManager, app)
+                    )
+                }
+                .sortedByDescending { it.sizeBytes }
+                .take(limit)
+        }
 
     suspend fun getMediaItemsForCategory(categoryName: String, limit: Int = 100): List<MediaItem> =
         withContext(Dispatchers.IO) {
@@ -213,8 +188,8 @@ class StorageStatsRepository(private val context: Context) {
 
                 "Downloads & Documents" -> if (hasAnyDocumentVisibility()) {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        val downloads = queryMediaStore(MediaStore.Downloads.EXTERNAL_CONTENT_URI, limit)
-                        if (downloads.isNotEmpty()) downloads else queryDocumentsFromFiles(limit)
+                        queryMediaStore(MediaStore.Downloads.EXTERNAL_CONTENT_URI, limit)
+                            .ifEmpty { queryDocumentsFromFiles(limit) }
                     } else {
                         getLegacyDownloads(limit)
                     }
@@ -232,139 +207,84 @@ class StorageStatsRepository(private val context: Context) {
                 if (context.contentResolver.delete(uri, null, null) > 0) {
                     deletedCount++
                 } else if (uri.scheme == "file") {
-                    val file = uri.path?.let(::java.io.File)
+                    val file = uri.path?.let { pathValue -> File(pathValue) }
                     if (file != null && file.exists() && file.delete()) deletedCount++
                 }
-            } catch (e: SecurityException) {
-                // Android may require user-mediated confirmation. The caller verifies by re-querying.
-            } catch (e: Exception) {
-                // The caller verifies the source of truth and reports only confirmed deletions.
+            } catch (_: SecurityException) {
+                // Android may require user-mediated confirmation; caller verifies by re-querying.
+            } catch (_: Exception) {
+                // Caller reports only deletions verified through a fresh query.
             }
         }
         deletedCount > 0
     }
 
-    private fun hasAnyDocumentVisibility(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+    private fun visualAccessState(hasFullPermission: Boolean): CategoryAccessState = when {
+        hasFullPermission -> CategoryAccessState.AVAILABLE
+        PermissionUtils.getMediaAccess(context) == PermissionUtils.MediaAccess.PARTIAL_VISUAL -> {
+            CategoryAccessState.PARTIAL
+        }
+        else -> CategoryAccessState.PERMISSION_REQUIRED
+    }
+
+    private fun confidenceFor(name: String, access: CategoryAccessState): DataConfidence = when (name) {
+        "Apps & Games" -> if (access == CategoryAccessState.AVAILABLE) {
+            DataConfidence.PACKAGE_STATS_MEASURED
+        } else DataConfidence.UNAVAILABLE
+
+        "Photos", "Videos", "Audio & Music", "Downloads & Documents" -> when (access) {
+            CategoryAccessState.AVAILABLE -> DataConfidence.MEDIASTORE_MEASURED
+            CategoryAccessState.PARTIAL -> DataConfidence.PARTIAL
+            else -> DataConfidence.UNAVAILABLE
+        }
+
+        "System & Other" -> DataConfidence.ESTIMATED
+        else -> DataConfidence.UNAVAILABLE
+    }
+
+    private fun availabilityFor(access: CategoryAccessState): DataAvailability = when (access) {
+        CategoryAccessState.AVAILABLE -> DataAvailability.AVAILABLE
+        CategoryAccessState.PARTIAL -> DataAvailability.PARTIAL
+        CategoryAccessState.PERMISSION_REQUIRED -> DataAvailability.PERMISSION_REQUIRED
+        CategoryAccessState.QUERY_FAILED -> DataAvailability.QUERY_FAILED
+        CategoryAccessState.UNSUPPORTED -> DataAvailability.UNSUPPORTED
+    }
+
+    private fun hasAnyDocumentVisibility(): Boolean =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             PermissionUtils.hasImagePermission(context) ||
                 PermissionUtils.hasVideoPermission(context) ||
                 PermissionUtils.hasAudioPermission(context)
         } else {
             PermissionUtils.hasMediaPermissions(context)
         }
+
+    private fun getDownloadsSize(): Long = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        getMediaCategorySize(MediaStore.Downloads.EXTERNAL_CONTENT_URI)
+    } else {
+        getLegacyDownloadsSize()
     }
 
     private fun queryDocumentsFromFiles(limit: Int): List<MediaItem> {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return emptyList()
-
         val uri = MediaStore.Files.getContentUri("external")
-        val projection = arrayOf(
-            MediaStore.MediaColumns._ID,
-            MediaStore.MediaColumns.DISPLAY_NAME,
-            MediaStore.MediaColumns.SIZE,
-            MediaStore.MediaColumns.DATE_ADDED,
-            MediaStore.MediaColumns.MIME_TYPE
-        )
+        val projection = mediaProjection()
         val selection = "${MediaStore.MediaColumns.MIME_TYPE} IS NOT NULL AND (" +
             "${MediaStore.MediaColumns.MIME_TYPE} LIKE 'application/%' OR " +
             "${MediaStore.MediaColumns.MIME_TYPE} LIKE 'text/%')"
-
         return queryRows(uri, projection, selection, limit)
     }
 
-    private fun getMediaCategorySize(uri: Uri): Long {
-        var total = 0L
-        try {
-            context.contentResolver.query(
-                uri,
-                arrayOf(MediaStore.MediaColumns.SIZE),
-                null,
-                null,
-                null
-            )?.use { cursor ->
-                val sizeColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
-                while (cursor.moveToNext()) {
-                    total += cursor.getLong(sizeColumn).coerceAtLeast(0L)
-                }
-            }
-        } catch (e: Exception) {
-            return 0L
-        }
-        return total
-    }
+    private fun queryMediaStore(uri: Uri, limit: Int): List<MediaItem> =
+        queryRows(uri, mediaProjection(), null, limit)
 
-    private fun getLegacyDownloadsSize(): Long {
-        return try {
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                .listFiles()
-                .orEmpty()
-                .filter { it.isFile }
-                .sumOf { it.length().coerceAtLeast(0L) }
-        } catch (e: Exception) {
-            0L
-        }
-    }
-
-    private fun getLegacyDownloads(limit: Int): List<MediaItem> {
-        return try {
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                .listFiles()
-                .orEmpty()
-                .filter { it.isFile && it.length() > 0L }
-                .sortedByDescending { it.length() }
-                .take(limit)
-                .mapIndexed { index, file ->
-                    MediaItem(
-                        id = index.toLong(),
-                        displayName = file.name,
-                        sizeBytes = file.length(),
-                        dateAdded = file.lastModified() / 1000L,
-                        mimeType = null,
-                        uriString = Uri.fromFile(file).toString()
-                    )
-                }
-        } catch (e: Exception) {
-            emptyList()
-        }
-    }
-
-    private fun getAppsTotalStorageSize(): Long {
-        val manager = context.getSystemService(Context.STORAGE_STATS_SERVICE) as? StorageStatsManager
-            ?: return 0L
-        return context.packageManager
-            .getInstalledApplications(PackageManager.GET_META_DATA)
-            .mapNotNull { queryAppSize(manager, it) }
-            .sum()
-    }
-
-    private fun queryAppSize(manager: StorageStatsManager, app: ApplicationInfo): Long? {
-        return try {
-            val stats = manager.queryStatsForPackage(
-                StorageManager.UUID_DEFAULT,
-                app.packageName,
-                android.os.Process.myUserHandle()
-            )
-            (stats.appBytes + stats.dataBytes + stats.cacheBytes).coerceAtLeast(0L)
-        } catch (packageError: Exception) {
-            try {
-                val stats = manager.queryStatsForUid(StorageManager.UUID_DEFAULT, app.uid)
-                (stats.appBytes + stats.dataBytes + stats.cacheBytes).coerceAtLeast(0L)
-            } catch (uidError: Exception) {
-                null
-            }
-        }
-    }
-
-    private fun queryMediaStore(uri: Uri, limit: Int): List<MediaItem> {
-        val projection = arrayOf(
-            MediaStore.MediaColumns._ID,
-            MediaStore.MediaColumns.DISPLAY_NAME,
-            MediaStore.MediaColumns.SIZE,
-            MediaStore.MediaColumns.DATE_ADDED,
-            MediaStore.MediaColumns.MIME_TYPE
-        )
-        return queryRows(uri, projection, null, limit)
-    }
+    private fun mediaProjection(): Array<String> = arrayOf(
+        MediaStore.MediaColumns._ID,
+        MediaStore.MediaColumns.DISPLAY_NAME,
+        MediaStore.MediaColumns.SIZE,
+        MediaStore.MediaColumns.DATE_ADDED,
+        MediaStore.MediaColumns.MIME_TYPE
+    )
 
     private fun queryRows(
         uri: Uri,
@@ -386,7 +306,6 @@ class StorageStatsRepository(private val context: Context) {
                 val sizeColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
                 val dateColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_ADDED)
                 val mimeColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.MIME_TYPE)
-
                 while (cursor.moveToNext() && items.size < limit) {
                     val size = cursor.getLong(sizeColumn)
                     if (size <= 0L) continue
@@ -401,27 +320,101 @@ class StorageStatsRepository(private val context: Context) {
                     )
                 }
             }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             return emptyList()
         }
         return items
     }
 
-    private fun getBoundedIcon(packageManager: PackageManager, app: ApplicationInfo): Drawable? {
-        return try {
-            val original = packageManager.getApplicationIcon(app)
-            val width = original.intrinsicWidth.coerceIn(48, 96)
-            val height = original.intrinsicHeight.coerceIn(48, 96)
-            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-            val canvas = Canvas(bitmap)
-            val oldBounds = original.bounds
-            original.setBounds(0, 0, width, height)
-            original.draw(canvas)
-            original.bounds = oldBounds
-            BitmapDrawable(context.resources, bitmap)
-        } catch (e: Exception) {
+    private fun getMediaCategorySize(uri: Uri): Long {
+        var total = 0L
+        try {
+            context.contentResolver.query(
+                uri,
+                arrayOf(MediaStore.MediaColumns.SIZE),
+                null,
+                null,
+                null
+            )?.use { cursor ->
+                val sizeColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
+                while (cursor.moveToNext()) {
+                    total += cursor.getLong(sizeColumn).coerceAtLeast(0L)
+                }
+            }
+        } catch (_: Exception) {
+            return 0L
+        }
+        return total
+    }
+
+    private fun getLegacyDownloadsSize(): Long = try {
+        Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            .listFiles()
+            .orEmpty()
+            .filter { it.isFile }
+            .sumOf { it.length().coerceAtLeast(0L) }
+    } catch (_: Exception) {
+        0L
+    }
+
+    private fun getLegacyDownloads(limit: Int): List<MediaItem> = try {
+        Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            .listFiles()
+            .orEmpty()
+            .filter { it.isFile && it.length() > 0L }
+            .sortedByDescending { it.length() }
+            .take(limit)
+            .mapIndexed { index, file ->
+                MediaItem(
+                    id = index.toLong(),
+                    displayName = file.name,
+                    sizeBytes = file.length(),
+                    dateAdded = file.lastModified() / 1000L,
+                    mimeType = null,
+                    uriString = Uri.fromFile(file).toString()
+                )
+            }
+    } catch (_: Exception) {
+        emptyList()
+    }
+
+    private fun getAppsTotalStorageSize(): Long {
+        val manager = context.getSystemService(Context.STORAGE_STATS_SERVICE) as? StorageStatsManager
+            ?: return 0L
+        return context.packageManager.getInstalledApplications(PackageManager.GET_META_DATA)
+            .mapNotNull { queryAppSize(manager, it) }
+            .sum()
+    }
+
+    private fun queryAppSize(manager: StorageStatsManager, app: ApplicationInfo): Long? = try {
+        val stats = manager.queryStatsForPackage(
+            StorageManager.UUID_DEFAULT,
+            app.packageName,
+            android.os.Process.myUserHandle()
+        )
+        (stats.appBytes + stats.dataBytes + stats.cacheBytes).coerceAtLeast(0L)
+    } catch (_: Exception) {
+        try {
+            val stats = manager.queryStatsForUid(StorageManager.UUID_DEFAULT, app.uid)
+            (stats.appBytes + stats.dataBytes + stats.cacheBytes).coerceAtLeast(0L)
+        } catch (_: Exception) {
             null
         }
+    }
+
+    private fun getBoundedIcon(packageManager: PackageManager, app: ApplicationInfo): Drawable? = try {
+        val original = packageManager.getApplicationIcon(app)
+        val width = original.intrinsicWidth.coerceIn(48, 96)
+        val height = original.intrinsicHeight.coerceIn(48, 96)
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        val oldBounds = original.bounds
+        original.setBounds(0, 0, width, height)
+        original.draw(canvas)
+        original.bounds = oldBounds
+        BitmapDrawable(context.resources, bitmap)
+    } catch (_: Exception) {
+        null
     }
 
     companion object {
