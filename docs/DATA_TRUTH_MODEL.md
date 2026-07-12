@@ -111,6 +111,10 @@ Each feature should request only the access it needs.
 
 A refusal should degrade one feature, not disable unrelated measurements.
 
+## Implemented enforcement
+
+The hardened branch enforces this model through typed confidence and availability values, permission-specific category states, structured deletion results, fresh-query deletion verification, measured-only recommendation inputs, and removal of production cleaner simulations.
+
 ## Release gate
 
 Before release, verify:
