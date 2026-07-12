@@ -6,7 +6,7 @@ plugins {
 }
 
 android {
-  namespace = "com.example"
+  namespace = "com.stinkyweasel.spacewise"
   compileSdk = 36
 
   defaultConfig {
