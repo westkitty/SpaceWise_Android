@@ -17,7 +17,10 @@ class CategoryDetailViewModel(private val repository: StorageStatsRepository) : 
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
+    private var activeCategory: String? = null
+
     fun loadMediaForCategory(categoryName: String) {
+        activeCategory = categoryName
         viewModelScope.launch {
             _isLoading.value = true
             try {
@@ -32,23 +35,34 @@ class CategoryDetailViewModel(private val repository: StorageStatsRepository) : 
 
     fun deleteSelectedItems(selectedIds: Set<Long>, onComplete: (Boolean, Long) -> Unit) {
         viewModelScope.launch {
-            val currentList = _mediaItems.value
-            val itemsToDelete = currentList.filter { it.id in selectedIds }
-            if (itemsToDelete.isEmpty()) {
+            val category = activeCategory
+            val before = _mediaItems.value
+            val requested = before.filter { it.id in selectedIds }
+
+            if (category == null || requested.isEmpty()) {
                 onComplete(false, 0L)
                 return@launch
             }
 
-            val totalBytesReclaimed = itemsToDelete.sumOf { it.sizeBytes }
+            _isLoading.value = true
             try {
-                // Call the repository to securely delete from filesystem/MediaStore
-                repository.deleteMediaItems(itemsToDelete)
-                
-                // Dynamically update state so they vanish immediately
-                _mediaItems.value = currentList.filter { it.id !in selectedIds }
-                onComplete(true, totalBytesReclaimed)
+                repository.deleteMediaItems(requested)
+
+                // Do not trust a deletion request result alone. Re-query MediaStore and only count
+                // entries that are actually gone from the source of truth.
+                val after = repository.getMediaItemsForCategory(category)
+                val remainingUris = after.mapNotNull { it.uriString }.toSet()
+                val deleted = requested.filter { item ->
+                    val uri = item.uriString
+                    uri != null && uri !in remainingUris
+                }
+
+                _mediaItems.value = after
+                onComplete(deleted.isNotEmpty(), deleted.sumOf { it.sizeBytes })
             } catch (e: Exception) {
                 onComplete(false, 0L)
+            } finally {
+                _isLoading.value = false
             }
         }
     }
