@@ -35,10 +35,10 @@ class CategoryDetailViewModel(private val repository: StorageStatsRepository) : 
                     CategoryAccessState.PARTIAL -> repository.getMediaItemsForCategory(categoryName)
                     else -> emptyList()
                 }
-            } catch (e: SecurityException) {
+            } catch (_: SecurityException) {
                 _mediaItems.value = emptyList()
                 _accessState.value = CategoryAccessState.PERMISSION_REQUIRED
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 _mediaItems.value = emptyList()
                 _accessState.value = CategoryAccessState.QUERY_FAILED
             } finally {
@@ -50,8 +50,7 @@ class CategoryDetailViewModel(private val repository: StorageStatsRepository) : 
     fun deleteSelectedItems(selectedIds: Set<Long>, onComplete: (DeletionResult) -> Unit) {
         viewModelScope.launch {
             val category = activeCategory
-            val before = _mediaItems.value
-            val requested = before.filter { it.id in selectedIds }
+            val requested = _mediaItems.value.filter { it.id in selectedIds }
             if (category == null || requested.isEmpty()) {
                 onComplete(DeletionResult(0, 0, 0, 0, 0L))
                 return@launch
@@ -60,25 +59,27 @@ class CategoryDetailViewModel(private val repository: StorageStatsRepository) : 
             _isLoading.value = true
             try {
                 repository.deleteMediaItems(requested)
-                val after = repository.getMediaItemsForCategory(category)
-                val remainingUris = after.mapNotNull { it.uriString }.toSet()
-                val verifiedDeleted = requested.filter { item ->
-                    item.uriString != null && item.uriString !in remainingUris
-                }
+                val verifiedDeleted = repository.getVerifiedDeletedItems(requested)
                 val skipped = requested.count { it.uriString == null }
-                val stillPresent = requested.size - verifiedDeleted.size - skipped
-                _mediaItems.value = after
+                val stillPresentOrUnknown = requested.size - verifiedDeleted.size - skipped
+
+                _mediaItems.value = try {
+                    repository.getMediaItemsForCategory(category)
+                } catch (_: Exception) {
+                    _mediaItems.value
+                }
+
                 onComplete(
                     DeletionResult(
                         requestedCount = requested.size,
                         verifiedDeletedCount = verifiedDeleted.size,
-                        stillPresentCount = stillPresent.coerceAtLeast(0),
+                        stillPresentCount = stillPresentOrUnknown.coerceAtLeast(0),
                         skippedCount = skipped,
                         verifiedReclaimedBytes = verifiedDeleted.sumOf { it.sizeBytes },
-                        confirmationMayBeRequired = stillPresent > 0
+                        confirmationMayBeRequired = stillPresentOrUnknown > 0
                     )
                 )
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 onComplete(
                     DeletionResult(
                         requestedCount = requested.size,
