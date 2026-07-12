@@ -1,7 +1,6 @@
 package com.stinkyweasel.spacewise.ui.screens
 
 import android.Manifest
-import android.content.Context
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -13,82 +12,69 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PermMedia
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.stinkyweasel.spacewise.utils.PermissionUtils
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PermissionsScreen(
-    onNavigateBack: () -> Unit
-) {
+fun PermissionsScreen(onNavigateBack: () -> Unit) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    var hasMediaPerm by remember { mutableStateOf(PermissionUtils.hasMediaPermissions(context)) }
-    var hasFullMedia by remember { mutableStateOf(PermissionUtils.hasFullMediaPermissions(context)) }
+    var mediaAccess by remember { mutableStateOf(PermissionUtils.getMediaAccess(context)) }
     var hasUsagePerm by remember { mutableStateOf(PermissionUtils.hasUsageStatsPermission(context)) }
 
-    // Re-check permissions when user resumes back to app (e.g. from usage settings)
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                hasMediaPerm = PermissionUtils.hasMediaPermissions(context)
-                hasFullMedia = PermissionUtils.hasFullMediaPermissions(context)
-                hasUsagePerm = PermissionUtils.hasUsageStatsPermission(context)
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-        }
+    fun refreshPermissionState() {
+        mediaAccess = PermissionUtils.getMediaAccess(context)
+        hasUsagePerm = PermissionUtils.hasUsageStatsPermission(context)
     }
 
-    // Media permissions request launcher
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) refreshPermissionState()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     val permissionsToRequest = remember {
         when {
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE -> {
-                arrayOf(
-                    Manifest.permission.READ_MEDIA_IMAGES,
-                    Manifest.permission.READ_MEDIA_VIDEO,
-                    Manifest.permission.READ_MEDIA_AUDIO,
-                    Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED
-                )
-            }
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> {
-                arrayOf(
-                    Manifest.permission.READ_MEDIA_IMAGES,
-                    Manifest.permission.READ_MEDIA_VIDEO,
-                    Manifest.permission.READ_MEDIA_AUDIO
-                )
-            }
-            else -> {
-                arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
-            }
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE -> arrayOf(
+                Manifest.permission.READ_MEDIA_IMAGES,
+                Manifest.permission.READ_MEDIA_VIDEO,
+                Manifest.permission.READ_MEDIA_AUDIO,
+                Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED
+            )
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> arrayOf(
+                Manifest.permission.READ_MEDIA_IMAGES,
+                Manifest.permission.READ_MEDIA_VIDEO,
+                Manifest.permission.READ_MEDIA_AUDIO
+            )
+            else -> arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
         }
     }
 
     val launcher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
-    ) { results ->
-        hasMediaPerm = PermissionUtils.hasMediaPermissions(context)
-        hasFullMedia = PermissionUtils.hasFullMediaPermissions(context)
-    }
+    ) { refreshPermissionState() }
+
+    val hasMediaAccess = mediaAccess != PermissionUtils.MediaAccess.NONE
+    val hasFullMedia = mediaAccess == PermissionUtils.MediaAccess.FULL
+    val hasLimitedMedia = mediaAccess == PermissionUtils.MediaAccess.PARTIAL_VISUAL
 
     Scaffold(
         topBar = {
@@ -96,15 +82,10 @@ fun PermissionsScreen(
                 title = { Text("Permissions", fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack, modifier = Modifier.testTag("back_button")) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Go back"
-                        )
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Go back")
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
-                )
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
             )
         }
     ) { innerPadding ->
@@ -124,47 +105,50 @@ fun PermissionsScreen(
             )
 
             Text(
-                text = "SpaceWise operates entirely locally on your phone. To scan your storage and categorize files, we require the following permissions. No data is ever collected or sent to any server.",
+                text = "SpaceWise operates locally on your phone. Permission scope controls which categories can be measured. Selected-media access is reported as partial rather than complete device visibility.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
-            // 1. Media Files Permission Card
             PermissionCard(
                 title = "Media Files",
-                description = "Required to accurately scan and calculate sizes for Photos, Videos, and Audio. Supports Android 14 partial access.",
-                isGranted = hasMediaPerm,
-                isLimited = hasMediaPerm && !hasFullMedia,
+                description = when {
+                    hasFullMedia -> "Full image, video, and audio access is active."
+                    hasLimitedMedia -> "Only user-selected photos and videos are visible. Audio and the rest of the visual library may remain unavailable."
+                    else -> "Grant media access to measure visible photos, videos, and audio. Android 14 may offer selected-media access instead of full visual access."
+                },
+                isGranted = hasMediaAccess,
+                isLimited = hasLimitedMedia,
                 icon = Icons.Default.PermMedia,
-                actionText = if (hasMediaPerm) "Access Allowed" else "Grant Media Permission",
+                actionText = when {
+                    hasFullMedia -> "Full Access Active"
+                    hasLimitedMedia -> "Change Selected Access"
+                    else -> "Grant Media Access"
+                },
                 onAction = { launcher.launch(permissionsToRequest) },
                 tag = "media_permission_card"
             )
 
-            // 2. Usage Stats Permission Card
             PermissionCard(
                 title = "App Usage Stats",
-                description = "Required to query package sizes (app, cache, and user data) and find long-neglected apps using system statistics.",
+                description = "Required to query visible package sizes and last-used timestamps. Android may still limit which installed packages SpaceWise can see.",
                 isGranted = hasUsagePerm,
                 isLimited = false,
                 icon = Icons.Default.Storage,
                 actionText = if (hasUsagePerm) "Access Granted" else "Configure in Settings",
                 onAction = {
-                    try {
-                        context.startActivity(PermissionUtils.getUsageAccessSettingsIntent(context))
-                    } catch (e: Exception) {
-                        // Safe fallback in case some OEMs block settings intents
-                    }
+                    runCatching { context.startActivity(PermissionUtils.getUsageAccessSettingsIntent(context)) }
                 },
                 tag = "usage_permission_card"
             )
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Info Card about Privacy
             Card(
                 shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+                ),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
@@ -173,18 +157,18 @@ fun PermissionsScreen(
                 ) {
                     Icon(
                         imageVector = Icons.Default.Info,
-                        contentDescription = "Privacy Commitment",
+                        contentDescription = "Privacy information",
                         tint = MaterialTheme.colorScheme.primary
                     )
                     Column {
                         Text(
-                            text = "Privacy Guarantee",
+                            text = "Privacy model",
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.primary
                         )
                         Text(
-                            text = "We do not declare Internet permissions in our manifest. Your files and usage habits never leave this device.",
+                            text = "The app manifest does not request Internet access. Permission status does not guarantee exhaustive storage visibility because Android restricts system, private-app, and package data.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -194,7 +178,7 @@ fun PermissionsScreen(
 
             Spacer(modifier = Modifier.weight(1f))
 
-            if (hasMediaPerm && hasUsagePerm) {
+            if (hasFullMedia && hasUsagePerm) {
                 Button(
                     onClick = onNavigateBack,
                     modifier = Modifier
@@ -205,7 +189,7 @@ fun PermissionsScreen(
                 ) {
                     Icon(imageVector = Icons.Default.CheckCircle, contentDescription = null)
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("All Set! Continue", fontWeight = FontWeight.Bold)
+                    Text("Continue with Full Access", fontWeight = FontWeight.Bold)
                 }
             } else {
                 OutlinedButton(
@@ -216,7 +200,7 @@ fun PermissionsScreen(
                         .testTag("skip_button"),
                     shape = RoundedCornerShape(12.dp)
                 ) {
-                    Text("Analyze with Limited Access")
+                    Text(if (hasLimitedMedia) "Continue with Selected Media" else "Analyze with Limited Access")
                 }
             }
         }
@@ -235,9 +219,7 @@ fun PermissionCard(
     tag: String
 ) {
     Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag(tag),
+        modifier = Modifier.fillMaxWidth().testTag(tag),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
             containerColor = if (isGranted) {
@@ -260,7 +242,8 @@ fun PermissionCard(
                     modifier = Modifier
                         .size(40.dp)
                         .background(
-                            if (isGranted) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                            if (isGranted) MaterialTheme.colorScheme.primaryContainer
+                            else MaterialTheme.colorScheme.surfaceVariant,
                             CircleShape
                         ),
                     contentAlignment = Alignment.Center
@@ -268,10 +251,11 @@ fun PermissionCard(
                     Icon(
                         imageVector = icon,
                         contentDescription = null,
-                        tint = if (isGranted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        tint = if (isGranted) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                
+
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = title,
@@ -279,32 +263,20 @@ fun PermissionCard(
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
-                    if (isGranted) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.CheckCircle,
-                                contentDescription = "Granted",
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Text(
-                                text = if (isLimited) "Limited/Selected Access" else "Active",
-                                style = MaterialTheme.typography.bodySmall,
-                                fontWeight = FontWeight.SemiBold,
-                                color = if (isLimited) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary
-                            )
+                    Text(
+                        text = when {
+                            isLimited -> "Limited / selected access"
+                            isGranted -> "Active"
+                            else -> "Access required"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = when {
+                            isLimited -> MaterialTheme.colorScheme.secondary
+                            isGranted -> MaterialTheme.colorScheme.primary
+                            else -> MaterialTheme.colorScheme.error
                         }
-                    } else {
-                        Text(
-                            text = "Access Required",
-                            style = MaterialTheme.typography.bodySmall,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                    }
+                    )
                 }
             }
 
@@ -319,7 +291,8 @@ fun PermissionCard(
                 enabled = !isGranted || isLimited,
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isGranted) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary
+                    containerColor = if (isGranted) MaterialTheme.colorScheme.secondary
+                    else MaterialTheme.colorScheme.primary
                 ),
                 shape = RoundedCornerShape(8.dp)
             ) {
