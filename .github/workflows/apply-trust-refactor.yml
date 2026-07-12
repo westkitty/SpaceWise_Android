@@ -50,3 +50,5 @@ jobs:
           fi
           git commit -m "Complete SpaceWise trust-model refactor"
           git push origin HEAD:chatgpt/trust-model-refactor
+
+# One-shot migration trigger: 2026-07-11
