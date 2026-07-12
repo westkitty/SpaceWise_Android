@@ -12,43 +12,73 @@ import androidx.core.content.ContextCompat
 
 object PermissionUtils {
 
-    fun hasMediaPermissions(context: Context): Boolean {
+    enum class MediaAccess {
+        NONE,
+        PARTIAL_VISUAL,
+        FULL
+    }
+
+    fun getMediaAccess(context: Context): MediaAccess {
         return when {
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE -> {
-                // Android 14+: Full access OR partial access
-                val hasImages = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_IMAGES) == PackageManager.PERMISSION_GRANTED
-                val hasVideos = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_VIDEO) == PackageManager.PERMISSION_GRANTED
-                val hasAudio = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_AUDIO) == PackageManager.PERMISSION_GRANTED
-                val hasVisualSelected = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED) == PackageManager.PERMISSION_GRANTED
-                
-                (hasImages && hasVideos && hasAudio) || hasVisualSelected
+                val hasImages = isGranted(context, Manifest.permission.READ_MEDIA_IMAGES)
+                val hasVideos = isGranted(context, Manifest.permission.READ_MEDIA_VIDEO)
+                val hasAudio = isGranted(context, Manifest.permission.READ_MEDIA_AUDIO)
+                val hasSelectedVisual = isGranted(context, Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
+
+                when {
+                    hasImages && hasVideos && hasAudio -> MediaAccess.FULL
+                    hasSelectedVisual -> MediaAccess.PARTIAL_VISUAL
+                    else -> MediaAccess.NONE
+                }
             }
+
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> {
-                // Android 13: Granular media permissions
-                val hasImages = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_IMAGES) == PackageManager.PERMISSION_GRANTED
-                val hasVideos = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_VIDEO) == PackageManager.PERMISSION_GRANTED
-                val hasAudio = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_AUDIO) == PackageManager.PERMISSION_GRANTED
-                
-                hasImages && hasVideos && hasAudio
+                val hasImages = isGranted(context, Manifest.permission.READ_MEDIA_IMAGES)
+                val hasVideos = isGranted(context, Manifest.permission.READ_MEDIA_VIDEO)
+                val hasAudio = isGranted(context, Manifest.permission.READ_MEDIA_AUDIO)
+                if (hasImages && hasVideos && hasAudio) MediaAccess.FULL else MediaAccess.NONE
             }
+
             else -> {
-                // Android 12 and below
-                ContextCompat.checkSelfPermission(context, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+                if (isGranted(context, Manifest.permission.READ_EXTERNAL_STORAGE)) {
+                    MediaAccess.FULL
+                } else {
+                    MediaAccess.NONE
+                }
             }
         }
     }
 
-    fun hasFullMediaPermissions(context: Context): Boolean {
+    /**
+     * Existing broad storage scans must only run with full media access.
+     * Partial Android 14 visual access is deliberately not treated as complete device visibility.
+     */
+    fun hasMediaPermissions(context: Context): Boolean = getMediaAccess(context) == MediaAccess.FULL
+
+    fun hasFullMediaPermissions(context: Context): Boolean = hasMediaPermissions(context)
+
+    fun hasImagePermission(context: Context): Boolean {
         return when {
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> {
-                val hasImages = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_IMAGES) == PackageManager.PERMISSION_GRANTED
-                val hasVideos = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_VIDEO) == PackageManager.PERMISSION_GRANTED
-                val hasAudio = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_AUDIO) == PackageManager.PERMISSION_GRANTED
-                hasImages && hasVideos && hasAudio
-            }
-            else -> {
-                ContextCompat.checkSelfPermission(context, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
-            }
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU ->
+                isGranted(context, Manifest.permission.READ_MEDIA_IMAGES)
+            else -> isGranted(context, Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+    }
+
+    fun hasVideoPermission(context: Context): Boolean {
+        return when {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU ->
+                isGranted(context, Manifest.permission.READ_MEDIA_VIDEO)
+            else -> isGranted(context, Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+    }
+
+    fun hasAudioPermission(context: Context): Boolean {
+        return when {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU ->
+                isGranted(context, Manifest.permission.READ_MEDIA_AUDIO)
+            else -> isGranted(context, Manifest.permission.READ_EXTERNAL_STORAGE)
         }
     }
 
@@ -62,7 +92,6 @@ object PermissionUtils {
                 context.packageName
             )
         } else {
-            @Suppress("DEPRECATION")
             appOps.checkOpNoThrow(
                 AppOpsManager.OPSTR_GET_USAGE_STATS,
                 Process.myUid(),
@@ -73,14 +102,16 @@ object PermissionUtils {
     }
 
     fun getUsageAccessSettingsIntent(context: Context): Intent {
-        val intent = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
-        // Add package URI if possible, but many devices only open main list
-        val uri = android.net.Uri.fromParts("package", context.packageName, null)
-        intent.data = uri
-        return intent
+        return Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS).apply {
+            data = android.net.Uri.fromParts("package", context.packageName, null)
+        }
     }
 
     fun hasAllCriticalPermissions(context: Context): Boolean {
-        return hasMediaPermissions(context) && hasUsageStatsPermission(context)
+        return hasFullMediaPermissions(context) && hasUsageStatsPermission(context)
+    }
+
+    private fun isGranted(context: Context, permission: String): Boolean {
+        return ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
     }
 }
