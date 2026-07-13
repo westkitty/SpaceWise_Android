@@ -1,26 +1,30 @@
 package com.stinkyweasel.spacewise.ui.screens
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
+import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -32,6 +36,13 @@ import com.stinkyweasel.spacewise.data.models.MediaItem
 import com.stinkyweasel.spacewise.viewmodel.CategoryDetailViewModel
 import kotlinx.coroutines.launch
 
+private enum class MediaSortMode(val label: String) {
+    SIZE("Largest"),
+    NEWEST("Newest"),
+    OLDEST("Oldest"),
+    NAME("Name")
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CategoryDetailScreen(
@@ -39,50 +50,83 @@ fun CategoryDetailScreen(
     viewModel: CategoryDetailViewModel,
     onNavigateBack: () -> Unit
 ) {
+    val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
     val mediaItems by viewModel.mediaItems.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val accessState by viewModel.accessState.collectAsState()
 
-    var selectedIds by remember { mutableStateOf(setOf<Long>()) }
+    var selectedKeys by remember { mutableStateOf(setOf<String>()) }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+    var sortMode by rememberSaveable { mutableStateOf(MediaSortMode.SIZE) }
+    var olderThanYearOnly by rememberSaveable { mutableStateOf(false) }
     var showDeleteConfirmation by remember { mutableStateOf(false) }
-    
+
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
     LaunchedEffect(categoryName) {
         viewModel.loadMediaForCategory(categoryName)
-        selectedIds = emptySet()
+        selectedKeys = emptySet()
     }
 
-    // Calculate sum size of selected files
-    val selectedItemsSize = remember(selectedIds, mediaItems) {
-        mediaItems.filter { it.id in selectedIds }.sumOf { it.sizeBytes }
+    val filteredItems by remember(mediaItems, searchQuery, sortMode, olderThanYearOnly) {
+        derivedStateOf {
+            val cutoff = (System.currentTimeMillis() / 1000L) - ONE_YEAR_SECONDS
+            mediaItems
+                .asSequence()
+                .filter { item ->
+                    searchQuery.isBlank() ||
+                        item.displayName.contains(searchQuery, ignoreCase = true) ||
+                        item.mimeType.orEmpty().contains(searchQuery, ignoreCase = true)
+                }
+                .filter { !olderThanYearOnly || item.dateAdded in 1 until cutoff }
+                .sortedWith(
+                    when (sortMode) {
+                        MediaSortMode.SIZE -> compareByDescending<MediaItem> { it.sizeBytes }
+                        MediaSortMode.NEWEST -> compareByDescending { it.dateAdded }
+                        MediaSortMode.OLDEST -> compareBy { it.dateAdded }
+                        MediaSortMode.NAME -> compareBy { it.displayName.lowercase() }
+                    }
+                )
+                .toList()
+        }
+    }
+
+    val selectedItemsSize by remember(selectedKeys, mediaItems) {
+        derivedStateOf {
+            mediaItems.filter { it.selectionKey in selectedKeys }.sumOf { it.sizeBytes }
+        }
+    }
+
+    fun openItem(item: MediaItem) {
+        val uri = item.uriString?.let(Uri::parse) ?: return
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, item.mimeType ?: "*/*")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        runCatching { context.startActivity(Intent.createChooser(intent, "Open ${item.displayName}")) }
+            .onFailure {
+                scope.launch { snackbarHostState.showSnackbar("No installed app can preview this item.") }
+            }
     }
 
     if (showDeleteConfirmation) {
         AlertDialog(
             onDismissRequest = { showDeleteConfirmation = false },
-            title = {
-                Text(
-                    text = "Request deletion",
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-            },
+            title = { Text("Request deletion", fontWeight = FontWeight.Bold) },
             text = {
                 Text(
-                    text = "Android will attempt to delete ${selectedIds.size} selected items. " +
-                           "Up to ${ByteFormatting.formatByteCount(selectedItemsSize)} may be reclaimed, " +
-                           "but SpaceWise will report only deletions verified by a fresh media scan.",
-                    style = MaterialTheme.typography.bodyMedium
+                    "Android will attempt to delete ${selectedKeys.size} selected items. " +
+                        "Up to ${ByteFormatting.formatByteCount(selectedItemsSize)} may be reclaimed. " +
+                        "SpaceWise will count only deletions it can verify afterward."
                 )
             },
             confirmButton = {
                 Button(
                     onClick = {
                         showDeleteConfirmation = false
-                        viewModel.deleteSelectedItems(selectedIds) { result ->
+                        viewModel.deleteSelectedItems(selectedKeys) { result ->
                             if (result.deletedAnything) {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             }
@@ -90,30 +134,21 @@ fun CategoryDetailScreen(
                                 val reclaimed = ByteFormatting.formatByteCount(result.verifiedReclaimedBytes)
                                 val message = when {
                                     result.fullyDeleted -> "Verified ${result.verifiedDeletedCount} deletions. Reclaimed $reclaimed."
-                                    result.deletedAnything -> "Verified ${result.verifiedDeletedCount} of ${result.requestedCount} deletions. Reclaimed $reclaimed."
+                                    result.deletedAnything -> "Verified ${result.verifiedDeletedCount} of ${result.requestedCount}. Reclaimed $reclaimed."
                                     result.confirmationMayBeRequired -> "No deletion was verified. Android may require confirmation or additional access."
                                     else -> "No deletion was verified."
                                 }
                                 snackbarHostState.showSnackbar(message)
                             }
-                            selectedIds = emptySet()
+                            selectedKeys = emptySet()
                         }
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                    modifier = Modifier.testTag("confirm_delete_dialog_btn")
-                ) {
-                    Text("Request Deletion", color = MaterialTheme.colorScheme.onError)
-                }
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) { Text("Request Deletion") }
             },
             dismissButton = {
-                TextButton(
-                    onClick = { showDeleteConfirmation = false },
-                    modifier = Modifier.testTag("dismiss_delete_dialog_btn")
-                ) {
-                    Text("Cancel")
-                }
-            },
-            shape = RoundedCornerShape(20.dp)
+                TextButton(onClick = { showDeleteConfirmation = false }) { Text("Cancel") }
+            }
         )
     }
 
@@ -124,47 +159,22 @@ fun CategoryDetailScreen(
                 title = { Text(categoryName, fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack, modifier = Modifier.testTag("back_button")) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Go back"
-                        )
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Go back")
                     }
                 },
                 actions = {
                     if (categoryName != "System & Other") {
-                        if (selectedIds.isNotEmpty()) {
-                            TextButton(
-                                onClick = { selectedIds = emptySet() },
-                                modifier = Modifier.testTag("deselect_all_button")
-                            ) {
-                                Text("Deselect All", fontWeight = FontWeight.SemiBold)
-                            }
-                        } else if (mediaItems.isNotEmpty()) {
-                            TextButton(
-                                onClick = { selectedIds = mediaItems.map { it.id }.toSet() },
-                                modifier = Modifier.testTag("select_all_button")
-                            ) {
-                                Text("Select All", fontWeight = FontWeight.SemiBold)
-                            }
-                        }
-                        
                         IconButton(
-                            onClick = { 
+                            onClick = {
                                 viewModel.loadMediaForCategory(categoryName)
-                                selectedIds = emptySet()
+                                selectedKeys = emptySet()
                             },
                             modifier = Modifier.testTag("refresh_button")
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.Refresh,
-                                contentDescription = "Refresh files"
-                            )
+                            Icon(Icons.Default.Refresh, contentDescription = "Refresh files")
                         }
                     }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
-                )
+                }
             )
         }
     ) { innerPadding ->
@@ -175,99 +185,118 @@ fun CategoryDetailScreen(
                 .padding(horizontal = 16.dp)
         ) {
             when {
-                categoryName == "System & Other" -> {
-                    SystemAndOtherExplanation()
-                }
-                isLoading -> {
-                    CircularProgressIndicator(
-                        modifier = Modifier.align(Alignment.Center),
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-                accessState != CategoryAccessState.AVAILABLE &&
-                    accessState != CategoryAccessState.PARTIAL -> {
+                categoryName == "System & Other" -> SystemAndOtherExplanation()
+                isLoading && mediaItems.isEmpty() -> CircularProgressIndicator(Modifier.align(Alignment.Center))
+                accessState != CategoryAccessState.AVAILABLE && accessState != CategoryAccessState.PARTIAL -> {
                     CategoryAccessStateCard(categoryName, accessState)
                 }
-                mediaItems.isEmpty() -> {
-                    EmptyMediaState(categoryName)
-                }
                 else -> {
-                    Column(modifier = Modifier.fillMaxSize()) {
-                        LazyColumn(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(10.dp),
-                            contentPadding = PaddingValues(top = 12.dp, bottom = 24.dp)
+                    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            modifier = Modifier.fillMaxWidth().testTag("media_search_input"),
+                            placeholder = { Text("Search visible files") },
+                            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                            singleLine = true,
+                            shape = RoundedCornerShape(14.dp)
+                        )
+
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            contentPadding = PaddingValues(vertical = 2.dp)
                         ) {
-                            item {
-                                Text(
-                                    text = "Select items to reclaim space:",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.padding(bottom = 6.dp)
+                            items(MediaSortMode.entries) { mode ->
+                                FilterChip(
+                                    selected = sortMode == mode,
+                                    onClick = { sortMode = mode },
+                                    label = { Text(mode.label) }
                                 )
                             }
-                            
-                            items(mediaItems, key = { it.id }) { item ->
-                                val isSelected = item.id in selectedIds
-                                MediaItemRow(
-                                    item = item,
-                                    isSelected = isSelected,
-                                    onSelectedChange = { checked ->
-                                        selectedIds = if (checked) {
-                                            selectedIds + item.id
-                                        } else {
-                                            selectedIds - item.id
-                                        }
-                                    }
+                            item {
+                                FilterChip(
+                                    selected = olderThanYearOnly,
+                                    onClick = { olderThanYearOnly = !olderThanYearOnly },
+                                    label = { Text("Older than 1 year") }
                                 )
                             }
                         }
 
-                        // Floating bottom reclaim action overlay
-                        if (selectedIds.isNotEmpty()) {
+                        if (accessState == CategoryAccessState.PARTIAL) {
+                            Text(
+                                "Only the media Android currently exposes to SpaceWise is included.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.tertiary
+                            )
+                        }
+
+                        if (filteredItems.isEmpty()) {
+                            EmptyMediaState(categoryName, searchQuery.isNotBlank() || olderThanYearOnly)
+                        } else {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "${filteredItems.size} visible items",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                TextButton(
+                                    onClick = {
+                                        val visibleKeys = filteredItems.map { it.selectionKey }.toSet()
+                                        selectedKeys = if (visibleKeys.all { it in selectedKeys }) {
+                                            selectedKeys - visibleKeys
+                                        } else {
+                                            selectedKeys + visibleKeys
+                                        }
+                                    }
+                                ) {
+                                    Text(if (filteredItems.all { it.selectionKey in selectedKeys }) "Deselect visible" else "Select visible")
+                                }
+                            }
+
+                            LazyColumn(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                                contentPadding = PaddingValues(bottom = 24.dp)
+                            ) {
+                                items(filteredItems, key = { it.selectionKey }) { item ->
+                                    MediaItemRow(
+                                        item = item,
+                                        isSelected = item.selectionKey in selectedKeys,
+                                        onSelectedChange = { checked ->
+                                            selectedKeys = if (checked) selectedKeys + item.selectionKey
+                                            else selectedKeys - item.selectionKey
+                                        },
+                                        onOpen = { openItem(item) }
+                                    )
+                                }
+                            }
+                        }
+
+                        if (selectedKeys.isNotEmpty()) {
                             Card(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 12.dp)
-                                    .testTag("reclaim_action_card"),
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
-                                shape = RoundedCornerShape(16.dp),
-                                border = CardDefaults.outlinedCardBorder()
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
                             ) {
                                 Row(
-                                    modifier = Modifier.padding(16.dp),
+                                    modifier = Modifier.fillMaxWidth().padding(14.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
                                     Column {
-                                        Text(
-                                            text = "${selectedIds.size} files selected",
-                                            style = MaterialTheme.typography.titleMedium,
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.onErrorContainer
-                                        )
-                                        Text(
-                                            text = "Potentially frees ${ByteFormatting.formatByteCount(selectedItemsSize)}",
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.8f)
-                                        )
+                                        Text("${selectedKeys.size} selected", fontWeight = FontWeight.Bold)
+                                        Text(ByteFormatting.formatByteCount(selectedItemsSize))
                                     }
-
                                     Button(
                                         onClick = { showDeleteConfirmation = true },
-                                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                                        modifier = Modifier.testTag("reclaim_delete_button")
+                                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Delete,
-                                            contentDescription = "Delete",
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text("Request Deletion", fontWeight = FontWeight.Bold)
+                                        Icon(Icons.Default.Delete, contentDescription = null)
+                                        Spacer(Modifier.width(8.dp))
+                                        Text("Delete")
                                     }
                                 }
                             }
@@ -280,13 +309,14 @@ fun CategoryDetailScreen(
 }
 
 @Composable
-fun MediaItemRow(
+private fun MediaItemRow(
     item: MediaItem,
     isSelected: Boolean,
-    onSelectedChange: (Boolean) -> Unit
+    onSelectedChange: (Boolean) -> Unit,
+    onOpen: () -> Unit
 ) {
     val haptic = LocalHapticFeedback.current
-    val triggerSelection: (Boolean) -> Unit = { checked ->
+    val select: (Boolean) -> Unit = { checked ->
         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
         onSelectedChange(checked)
     }
@@ -294,89 +324,47 @@ fun MediaItemRow(
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .testTag("media_item_${item.id}")
-            .clickable { triggerSelection(!isSelected) },
-        shape = RoundedCornerShape(12.dp),
+            .clickable { select(!isSelected) }
+            .testTag("media_item_${item.selectionKey.hashCode()}"),
         colors = CardDefaults.cardColors(
-            containerColor = if (isSelected) {
-                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f)
-            } else {
-                MaterialTheme.colorScheme.surface
-            }
+            containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+            else MaterialTheme.colorScheme.surface
         ),
-        border = if (isSelected) {
-            CardDefaults.outlinedCardBorder().copy(
-                brush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary)
-            )
-        } else {
-            CardDefaults.outlinedCardBorder()
-        }
+        border = CardDefaults.outlinedCardBorder()
     ) {
         Row(
             modifier = Modifier.padding(12.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Checkbox(
-                checked = isSelected,
-                onCheckedChange = triggerSelection,
-                modifier = Modifier.testTag("checkbox_${item.id}")
-            )
-
+            Checkbox(checked = isSelected, onCheckedChange = select)
             Box(
-                modifier = Modifier
-                    .size(40.dp)
-                    .background(MaterialTheme.colorScheme.surfaceVariant, CircleShape),
+                modifier = Modifier.size(40.dp).background(MaterialTheme.colorScheme.surfaceVariant, CircleShape),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.InsertDriveFile,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary
-                )
+                Icon(Icons.AutoMirrored.Filled.InsertDriveFile, contentDescription = null)
             }
-
-            Column(modifier = Modifier.weight(1f)) {
+            Column(Modifier.weight(1f)) {
                 Text(
-                    text = item.displayName,
-                    style = MaterialTheme.typography.bodyMedium,
+                    item.displayName,
                     fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    if (item.mimeType != null) {
-                        Text(
-                            text = item.mimeType,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = "•",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Text(
-                        text = item.formattedDate,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                Text(
+                    listOfNotNull(item.mimeType, item.formattedDate).joinToString(" • "),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Column(horizontalAlignment = Alignment.End) {
+                Text(item.formattedSize, fontWeight = FontWeight.Bold)
+                IconButton(onClick = onOpen, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Default.OpenInNew, contentDescription = "Preview ${item.displayName}")
                 }
             }
-
-            Text(
-                text = item.formattedSize,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface
-            )
         }
     }
 }
@@ -384,116 +372,59 @@ fun MediaItemRow(
 @Composable
 fun SystemAndOtherExplanation() {
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
+        modifier = Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Spacer(modifier = Modifier.height(32.dp))
-        Box(
-            modifier = Modifier
-                .size(72.dp)
-                .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f), CircleShape),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = Icons.Default.Shield,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(40.dp)
-            )
-        }
-
+        Spacer(Modifier.height(32.dp))
+        Icon(Icons.Default.Shield, contentDescription = null, modifier = Modifier.size(64.dp))
+        Text("OS, System & Private App Data", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
         Text(
-            text = "OS, System & Cached Workspace",
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onSurface
-        )
-
-        Text(
-            text = "This category represents standard core operating system files, system partition reserves, preloaded OEM firmware, private package storage folders, and cached logs.",
+            "Android does not let ordinary apps inspect system partitions or other apps' private files. " +
+                "SpaceWise reports this category as residual used storage instead of inventing a file list.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-
-        Card(
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
-            shape = RoundedCornerShape(16.dp),
-            modifier = Modifier.fillMaxWidth(),
-            border = CardDefaults.outlinedCardBorder()
-        ) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Text(
-                    text = "Why can't I see individual files?",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Text(
-                    text = "Modern Android versions apply strict sandboxing guidelines. Apps are forbidden from inspecting private files inside system partitions and other applications' private workspaces to protect user privacy. Thus, SpaceWise calculates this space mathematically as the residual storage leftover from the total used space.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
     }
 }
 
 @Composable
-fun EmptyMediaState(categoryName: String) {
+fun EmptyMediaState(categoryName: String, filtersActive: Boolean = false) {
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
+        modifier = Modifier.fillMaxSize().padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Spacer(modifier = Modifier.height(48.dp))
-        Icon(
-            imageVector = Icons.Default.Description,
-            contentDescription = "No items found",
-            modifier = Modifier.size(64.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-        )
+        Spacer(Modifier.height(32.dp))
+        Icon(Icons.Default.Description, contentDescription = null, modifier = Modifier.size(56.dp))
         Text(
-            text = "No Files Detected",
+            if (filtersActive) "No Matching Items" else "No Visible Files",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold
         )
         Text(
-            text = "No large items found under \"$categoryName\". Ensure you have loaded storage permissions so we can analyze files on your device.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+            if (filtersActive) "Change the search or filters to review more items."
+            else "Android exposed no listable items for $categoryName.",
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
 }
 
-
 @Composable
 fun CategoryAccessStateCard(categoryName: String, state: CategoryAccessState) {
     val message = when (state) {
-        CategoryAccessState.PERMISSION_REQUIRED -> "SpaceWise does not have permission to read $categoryName. No zero-byte claim is being made."
+        CategoryAccessState.PERMISSION_REQUIRED -> "SpaceWise does not have permission to read $categoryName."
         CategoryAccessState.QUERY_FAILED -> "Android allowed this category, but the current query failed. Try refreshing."
         CategoryAccessState.UNSUPPORTED -> "$categoryName cannot be listed through the Android APIs available to SpaceWise."
-        CategoryAccessState.PARTIAL -> "Only media explicitly selected in Android is visible. This is not the full library."
+        CategoryAccessState.PARTIAL -> "Only media explicitly exposed by Android is visible."
         CategoryAccessState.AVAILABLE -> "No visible items were found."
     }
-    Card(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-        shape = RoundedCornerShape(16.dp)
-    ) {
-        Column(
-            modifier = Modifier.padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
+    Card(Modifier.fillMaxWidth().padding(vertical = 24.dp)) {
+        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Category unavailable", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            Text(message, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(message, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
+
+private const val ONE_YEAR_SECONDS = 365L * 24L * 60L * 60L
