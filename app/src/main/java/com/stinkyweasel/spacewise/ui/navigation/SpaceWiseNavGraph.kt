@@ -11,8 +11,17 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.stinkyweasel.spacewise.data.repository.StorageStatsRepository
-import com.stinkyweasel.spacewise.ui.screens.*
-import com.stinkyweasel.spacewise.viewmodel.*
+import com.stinkyweasel.spacewise.ui.screens.AppListScreen
+import com.stinkyweasel.spacewise.ui.screens.BreakdownScreen
+import com.stinkyweasel.spacewise.ui.screens.CategoryDetailScreen
+import com.stinkyweasel.spacewise.ui.screens.DashboardScreen
+import com.stinkyweasel.spacewise.ui.screens.FolderAnalyzerScreen
+import com.stinkyweasel.spacewise.ui.screens.PermissionsScreen
+import com.stinkyweasel.spacewise.viewmodel.AppListViewModel
+import com.stinkyweasel.spacewise.viewmodel.BreakdownViewModel
+import com.stinkyweasel.spacewise.viewmodel.CategoryDetailViewModel
+import com.stinkyweasel.spacewise.viewmodel.DashboardViewModel
+import com.stinkyweasel.spacewise.viewmodel.SpaceWiseViewModelFactory
 import java.net.URLDecoder
 import java.net.URLEncoder
 
@@ -21,8 +30,9 @@ object SpaceWiseDestinations {
     const val PERMISSIONS = "permissions"
     const val BREAKDOWN = "breakdown"
     const val APP_LIST = "app_list"
+    const val FOLDER_ANALYZER = "folder_analyzer"
     const val CATEGORY_DETAIL = "category_detail/{categoryName}"
-    
+
     fun createCategoryDetailRoute(categoryName: String): String {
         val encodedName = URLEncoder.encode(categoryName, "UTF-8")
         return "category_detail/$encodedName"
@@ -36,8 +46,6 @@ fun SpaceWiseNavGraph(
     onToggleTheme: () -> Unit
 ) {
     val context = LocalContext.current
-    
-    // Create the repository and viewmodel factory once
     val repository = remember { StorageStatsRepository(context.applicationContext) }
     val factory = remember { SpaceWiseViewModelFactory(repository) }
 
@@ -61,9 +69,7 @@ fun SpaceWiseNavGraph(
         }
 
         composable(SpaceWiseDestinations.PERMISSIONS) {
-            PermissionsScreen(
-                onNavigateBack = { navController.popBackStack() }
-            )
+            PermissionsScreen(onNavigateBack = { navController.popBackStack() })
         }
 
         composable(SpaceWiseDestinations.BREAKDOWN) {
@@ -72,6 +78,7 @@ fun SpaceWiseNavGraph(
                 viewModel = breakdownViewModel,
                 onNavigateBack = { navController.popBackStack() },
                 onNavigateToAppList = { navController.navigate(SpaceWiseDestinations.APP_LIST) },
+                onNavigateToFolderAnalyzer = { navController.navigate(SpaceWiseDestinations.FOLDER_ANALYZER) },
                 onNavigateToCategoryDetail = { categoryName ->
                     navController.navigate(SpaceWiseDestinations.createCategoryDetailRoute(categoryName))
                 }
@@ -87,15 +94,16 @@ fun SpaceWiseNavGraph(
             )
         }
 
+        composable(SpaceWiseDestinations.FOLDER_ANALYZER) {
+            FolderAnalyzerScreen(onNavigateBack = { navController.popBackStack() })
+        }
+
         composable(
             route = SpaceWiseDestinations.CATEGORY_DETAIL,
-            arguments = listOf(
-                navArgument("categoryName") { type = NavType.StringType }
-            )
+            arguments = listOf(navArgument("categoryName") { type = NavType.StringType })
         ) { backStackEntry ->
             val encodedCategoryName = backStackEntry.arguments?.getString("categoryName") ?: ""
             val categoryName = URLDecoder.decode(encodedCategoryName, "UTF-8")
-            
             val categoryDetailViewModel: CategoryDetailViewModel = viewModel(factory = factory)
             CategoryDetailScreen(
                 categoryName = categoryName,
