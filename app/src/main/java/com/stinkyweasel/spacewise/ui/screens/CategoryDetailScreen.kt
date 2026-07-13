@@ -1,5 +1,6 @@
 package com.stinkyweasel.spacewise.ui.screens
 
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.background
@@ -21,6 +22,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -34,7 +36,10 @@ import com.stinkyweasel.spacewise.data.models.ByteFormatting
 import com.stinkyweasel.spacewise.data.models.CategoryAccessState
 import com.stinkyweasel.spacewise.data.models.MediaItem
 import com.stinkyweasel.spacewise.viewmodel.CategoryDetailViewModel
+import java.security.MessageDigest
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private enum class MediaSortMode(val label: String) {
     SIZE("Largest"),
@@ -60,6 +65,9 @@ fun CategoryDetailScreen(
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var sortMode by rememberSaveable { mutableStateOf(MediaSortMode.SIZE) }
     var olderThanYearOnly by rememberSaveable { mutableStateOf(false) }
+    var duplicateOnly by rememberSaveable { mutableStateOf(false) }
+    var duplicateKeys by remember { mutableStateOf<Set<String>?>(null) }
+    var isScanningDuplicates by remember { mutableStateOf(false) }
     var showDeleteConfirmation by remember { mutableStateOf(false) }
 
     val scope = rememberCoroutineScope()
@@ -68,9 +76,18 @@ fun CategoryDetailScreen(
     LaunchedEffect(categoryName) {
         viewModel.loadMediaForCategory(categoryName)
         selectedKeys = emptySet()
+        duplicateOnly = false
+        duplicateKeys = null
     }
 
-    val filteredItems by remember(mediaItems, searchQuery, sortMode, olderThanYearOnly) {
+    val filteredItems by remember(
+        mediaItems,
+        searchQuery,
+        sortMode,
+        olderThanYearOnly,
+        duplicateOnly,
+        duplicateKeys
+    ) {
         derivedStateOf {
             val cutoff = (System.currentTimeMillis() / 1000L) - ONE_YEAR_SECONDS
             mediaItems
@@ -80,7 +97,8 @@ fun CategoryDetailScreen(
                         item.displayName.contains(searchQuery, ignoreCase = true) ||
                         item.mimeType.orEmpty().contains(searchQuery, ignoreCase = true)
                 }
-                .filter { !olderThanYearOnly || item.dateAdded in 1 until cutoff }
+                .filter { !olderThanYearOnly || item.dateAdded in 1L until cutoff }
+                .filter { !duplicateOnly || item.selectionKey in duplicateKeys.orEmpty() }
                 .sortedWith(
                     when (sortMode) {
                         MediaSortMode.SIZE -> compareByDescending<MediaItem> { it.sizeBytes }
@@ -109,6 +127,30 @@ fun CategoryDetailScreen(
             .onFailure {
                 scope.launch { snackbarHostState.showSnackbar("No installed app can preview this item.") }
             }
+    }
+
+    fun enableDuplicateReview() {
+        if (duplicateOnly) {
+            duplicateOnly = false
+            return
+        }
+        if (duplicateKeys != null) {
+            duplicateOnly = true
+            return
+        }
+        scope.launch {
+            isScanningDuplicates = true
+            val matches = findExactDuplicateKeys(context, mediaItems)
+            duplicateKeys = matches
+            duplicateOnly = true
+            isScanningDuplicates = false
+            val message = if (matches.isEmpty()) {
+                "No exact duplicates found among visible files."
+            } else {
+                "Found ${matches.size} files in exact duplicate groups."
+            }
+            snackbarHostState.showSnackbar(message)
+        }
     }
 
     if (showDeleteConfirmation) {
@@ -141,6 +183,8 @@ fun CategoryDetailScreen(
                                 snackbarHostState.showSnackbar(message)
                             }
                             selectedKeys = emptySet()
+                            duplicateKeys = null
+                            duplicateOnly = false
                         }
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
@@ -168,6 +212,8 @@ fun CategoryDetailScreen(
                             onClick = {
                                 viewModel.loadMediaForCategory(categoryName)
                                 selectedKeys = emptySet()
+                                duplicateKeys = null
+                                duplicateOnly = false
                             },
                             modifier = Modifier.testTag("refresh_button")
                         ) {
@@ -220,6 +266,16 @@ fun CategoryDetailScreen(
                                     label = { Text("Older than 1 year") }
                                 )
                             }
+                            item {
+                                FilterChip(
+                                    selected = duplicateOnly,
+                                    onClick = ::enableDuplicateReview,
+                                    enabled = !isScanningDuplicates,
+                                    label = {
+                                        Text(if (isScanningDuplicates) "Scanning duplicates…" else "Exact duplicates")
+                                    }
+                                )
+                            }
                         }
 
                         if (accessState == CategoryAccessState.PARTIAL) {
@@ -231,7 +287,10 @@ fun CategoryDetailScreen(
                         }
 
                         if (filteredItems.isEmpty()) {
-                            EmptyMediaState(categoryName, searchQuery.isNotBlank() || olderThanYearOnly)
+                            EmptyMediaState(
+                                categoryName,
+                                searchQuery.isNotBlank() || olderThanYearOnly || duplicateOnly
+                            )
                         } else {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -426,5 +485,38 @@ fun CategoryAccessStateCard(categoryName: String, state: CategoryAccessState) {
         }
     }
 }
+
+private suspend fun findExactDuplicateKeys(context: Context, items: List<MediaItem>): Set<String> =
+    withContext(Dispatchers.IO) {
+        val candidates = items
+            .filter { it.sizeBytes > 0L && it.uriString != null }
+            .groupBy { it.sizeBytes }
+            .values
+            .filter { it.size > 1 }
+            .flatten()
+
+        val byDigest = mutableMapOf<String, MutableList<MediaItem>>()
+        for (item in candidates) {
+            val uri = item.uriString?.let(Uri::parse) ?: continue
+            val digest = runCatching {
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    val messageDigest = MessageDigest.getInstance("SHA-256")
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count <= 0) break
+                        messageDigest.update(buffer, 0, count)
+                    }
+                    messageDigest.digest().joinToString("") { byte -> "%02x".format(byte) }
+                }
+            }.getOrNull() ?: continue
+            byDigest.getOrPut(digest) { mutableListOf() }.add(item)
+        }
+
+        byDigest.values
+            .filter { group -> group.size > 1 }
+            .flatten()
+            .mapTo(linkedSetOf()) { it.selectionKey }
+    }
 
 private const val ONE_YEAR_SECONDS = 365L * 24L * 60L * 60L
