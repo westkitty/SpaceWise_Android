@@ -5,7 +5,19 @@ import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.weight
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -20,9 +32,35 @@ import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shield
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -60,8 +98,10 @@ fun CategoryDetailScreen(
     val mediaItems by viewModel.mediaItems.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val accessState by viewModel.accessState.collectAsState()
+    val scope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
 
-    var selectedKeys by remember { mutableStateOf(setOf<String>()) }
+    var selectedKeys by remember { mutableStateOf(emptySet<String>()) }
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var sortMode by rememberSaveable { mutableStateOf(MediaSortMode.SIZE) }
     var olderThanYearOnly by rememberSaveable { mutableStateOf(false) }
@@ -69,9 +109,6 @@ fun CategoryDetailScreen(
     var duplicateKeys by remember { mutableStateOf<Set<String>?>(null) }
     var isScanningDuplicates by remember { mutableStateOf(false) }
     var showDeleteConfirmation by remember { mutableStateOf(false) }
-
-    val scope = rememberCoroutineScope()
-    val snackbarHostState = remember { SnackbarHostState() }
 
     LaunchedEffect(categoryName) {
         viewModel.loadMediaForCategory(categoryName)
@@ -90,21 +127,20 @@ fun CategoryDetailScreen(
     ) {
         derivedStateOf {
             val cutoff = (System.currentTimeMillis() / 1000L) - ONE_YEAR_SECONDS
-            mediaItems
-                .asSequence()
+            mediaItems.asSequence()
                 .filter { item ->
                     searchQuery.isBlank() ||
                         item.displayName.contains(searchQuery, ignoreCase = true) ||
                         item.mimeType.orEmpty().contains(searchQuery, ignoreCase = true)
                 }
-                .filter { !olderThanYearOnly || item.dateAdded in 1L until cutoff }
-                .filter { !duplicateOnly || item.selectionKey in duplicateKeys.orEmpty() }
+                .filter { item -> !olderThanYearOnly || item.dateAdded in 1L until cutoff }
+                .filter { item -> !duplicateOnly || item.selectionKey in duplicateKeys.orEmpty() }
                 .sortedWith(
                     when (sortMode) {
                         MediaSortMode.SIZE -> compareByDescending<MediaItem> { it.sizeBytes }
-                        MediaSortMode.NEWEST -> compareByDescending { it.dateAdded }
-                        MediaSortMode.OLDEST -> compareBy { it.dateAdded }
-                        MediaSortMode.NAME -> compareBy { it.displayName.lowercase() }
+                        MediaSortMode.NEWEST -> compareByDescending<MediaItem> { it.dateAdded }
+                        MediaSortMode.OLDEST -> compareBy<MediaItem> { it.dateAdded }
+                        MediaSortMode.NAME -> compareBy<MediaItem> { it.displayName.lowercase() }
                     }
                 )
                 .toList()
@@ -117,39 +153,38 @@ fun CategoryDetailScreen(
         }
     }
 
-    fun openItem(item: MediaItem) {
+    fun preview(item: MediaItem) {
         val uri = item.uriString?.let(Uri::parse) ?: return
-        val intent = Intent(Intent.ACTION_VIEW).apply {
+        val target = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, item.mimeType ?: "*/*")
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-        runCatching { context.startActivity(Intent.createChooser(intent, "Open ${item.displayName}")) }
-            .onFailure {
-                scope.launch { snackbarHostState.showSnackbar("No installed app can preview this item.") }
-            }
+        runCatching {
+            context.startActivity(Intent.createChooser(target, "Open ${item.displayName}"))
+        }.onFailure {
+            scope.launch { snackbarHostState.showSnackbar("No installed app can preview this item.") }
+        }
     }
 
-    fun enableDuplicateReview() {
+    fun toggleDuplicateReview() {
         if (duplicateOnly) {
             duplicateOnly = false
             return
         }
-        if (duplicateKeys != null) {
+        duplicateKeys?.let {
             duplicateOnly = true
             return
         }
         scope.launch {
             isScanningDuplicates = true
-            val matches = findExactDuplicateKeys(context, mediaItems)
-            duplicateKeys = matches
+            val found = findExactDuplicateKeys(context, mediaItems)
+            duplicateKeys = found
             duplicateOnly = true
             isScanningDuplicates = false
-            val message = if (matches.isEmpty()) {
-                "No exact duplicates found among visible files."
-            } else {
-                "Found ${matches.size} files in exact duplicate groups."
-            }
-            snackbarHostState.showSnackbar(message)
+            snackbarHostState.showSnackbar(
+                if (found.isEmpty()) "No exact duplicates found among visible files."
+                else "Found ${found.size} files in exact duplicate groups."
+            )
         }
     }
 
@@ -161,7 +196,7 @@ fun CategoryDetailScreen(
                 Text(
                     "Android will attempt to delete ${selectedKeys.size} selected items. " +
                         "Up to ${ByteFormatting.formatByteCount(selectedItemsSize)} may be reclaimed. " +
-                        "SpaceWise will count only deletions it can verify afterward."
+                        "Only verified deletions will be counted."
                 )
             },
             confirmButton = {
@@ -225,15 +260,12 @@ fun CategoryDetailScreen(
         }
     ) { innerPadding ->
         Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .padding(horizontal = 16.dp)
+            modifier = Modifier.fillMaxSize().padding(innerPadding).padding(horizontal = 16.dp)
         ) {
             when {
                 categoryName == "System & Other" -> SystemAndOtherExplanation()
                 isLoading && mediaItems.isEmpty() -> CircularProgressIndicator(Modifier.align(Alignment.Center))
-                accessState != CategoryAccessState.AVAILABLE && accessState != CategoryAccessState.PARTIAL -> {
+                accessState !in setOf(CategoryAccessState.AVAILABLE, CategoryAccessState.PARTIAL) -> {
                     CategoryAccessStateCard(categoryName, accessState)
                 }
                 else -> {
@@ -269,7 +301,7 @@ fun CategoryDetailScreen(
                             item {
                                 FilterChip(
                                     selected = duplicateOnly,
-                                    onClick = ::enableDuplicateReview,
+                                    onClick = ::toggleDuplicateReview,
                                     enabled = !isScanningDuplicates,
                                     label = {
                                         Text(if (isScanningDuplicates) "Scanning duplicates…" else "Exact duplicates")
@@ -280,7 +312,7 @@ fun CategoryDetailScreen(
 
                         if (accessState == CategoryAccessState.PARTIAL) {
                             Text(
-                                "Only the media Android currently exposes to SpaceWise is included.",
+                                "Only media Android currently exposes to SpaceWise is included.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.tertiary
                             )
@@ -288,8 +320,8 @@ fun CategoryDetailScreen(
 
                         if (filteredItems.isEmpty()) {
                             EmptyMediaState(
-                                categoryName,
-                                searchQuery.isNotBlank() || olderThanYearOnly || duplicateOnly
+                                categoryName = categoryName,
+                                filtersActive = searchQuery.isNotBlank() || olderThanYearOnly || duplicateOnly
                             )
                         } else {
                             Row(
@@ -305,14 +337,20 @@ fun CategoryDetailScreen(
                                 TextButton(
                                     onClick = {
                                         val visibleKeys = filteredItems.map { it.selectionKey }.toSet()
-                                        selectedKeys = if (visibleKeys.all { it in selectedKeys }) {
+                                        selectedKeys = if (visibleKeys.all(selectedKeys::contains)) {
                                             selectedKeys - visibleKeys
                                         } else {
                                             selectedKeys + visibleKeys
                                         }
                                     }
                                 ) {
-                                    Text(if (filteredItems.all { it.selectionKey in selectedKeys }) "Deselect visible" else "Select visible")
+                                    Text(
+                                        if (filteredItems.all { it.selectionKey in selectedKeys }) {
+                                            "Deselect visible"
+                                        } else {
+                                            "Select visible"
+                                        }
+                                    )
                                 }
                             }
 
@@ -326,10 +364,13 @@ fun CategoryDetailScreen(
                                         item = item,
                                         isSelected = item.selectionKey in selectedKeys,
                                         onSelectedChange = { checked ->
-                                            selectedKeys = if (checked) selectedKeys + item.selectionKey
-                                            else selectedKeys - item.selectionKey
+                                            selectedKeys = if (checked) {
+                                                selectedKeys + item.selectionKey
+                                            } else {
+                                                selectedKeys - item.selectionKey
+                                            }
                                         },
-                                        onOpen = { openItem(item) }
+                                        onOpen = { preview(item) }
                                     )
                                 }
                             }
@@ -386,8 +427,11 @@ private fun MediaItemRow(
             .clickable { select(!isSelected) }
             .testTag("media_item_${item.selectionKey.hashCode()}"),
         colors = CardDefaults.cardColors(
-            containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
-            else MaterialTheme.colorScheme.surface
+            containerColor = if (isSelected) {
+                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+            } else {
+                MaterialTheme.colorScheme.surface
+            }
         ),
         border = CardDefaults.outlinedCardBorder()
     ) {
@@ -437,7 +481,11 @@ fun SystemAndOtherExplanation() {
     ) {
         Spacer(Modifier.height(32.dp))
         Icon(Icons.Default.Shield, contentDescription = null, modifier = Modifier.size(64.dp))
-        Text("OS, System & Private App Data", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        Text(
+            "OS, System & Private App Data",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold
+        )
         Text(
             "Android does not let ordinary apps inspect system partitions or other apps' private files. " +
                 "SpaceWise reports this category as residual used storage instead of inventing a file list.",
@@ -462,8 +510,11 @@ fun EmptyMediaState(categoryName: String, filtersActive: Boolean = false) {
             fontWeight = FontWeight.Bold
         )
         Text(
-            if (filtersActive) "Change the search or filters to review more items."
-            else "Android exposed no listable items for $categoryName.",
+            if (filtersActive) {
+                "Change the search or filters to review more items."
+            } else {
+                "Android exposed no listable items for $categoryName."
+            },
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
@@ -486,37 +537,39 @@ fun CategoryAccessStateCard(categoryName: String, state: CategoryAccessState) {
     }
 }
 
-private suspend fun findExactDuplicateKeys(context: Context, items: List<MediaItem>): Set<String> =
-    withContext(Dispatchers.IO) {
-        val candidates = items
-            .filter { it.sizeBytes > 0L && it.uriString != null }
-            .groupBy { it.sizeBytes }
-            .values
-            .filter { it.size > 1 }
-            .flatten()
+private suspend fun findExactDuplicateKeys(
+    context: Context,
+    items: List<MediaItem>
+): Set<String> = withContext(Dispatchers.IO) {
+    val candidates = items
+        .filter { it.sizeBytes > 0L && it.uriString != null }
+        .groupBy { it.sizeBytes }
+        .values
+        .filter { it.size > 1 }
+        .flatten()
 
-        val byDigest = mutableMapOf<String, MutableList<MediaItem>>()
-        for (item in candidates) {
-            val uri = item.uriString?.let(Uri::parse) ?: continue
-            val digest = runCatching {
-                context.contentResolver.openInputStream(uri)?.use { input ->
-                    val messageDigest = MessageDigest.getInstance("SHA-256")
-                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                    while (true) {
-                        val count = input.read(buffer)
-                        if (count <= 0) break
-                        messageDigest.update(buffer, 0, count)
-                    }
-                    messageDigest.digest().joinToString("") { byte -> "%02x".format(byte) }
+    val byDigest = mutableMapOf<String, MutableList<MediaItem>>()
+    candidates.forEach { item ->
+        val uri = item.uriString?.let(Uri::parse) ?: return@forEach
+        val digest = runCatching {
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                val messageDigest = MessageDigest.getInstance("SHA-256")
+                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count <= 0) break
+                    messageDigest.update(buffer, 0, count)
                 }
-            }.getOrNull() ?: continue
-            byDigest.getOrPut(digest) { mutableListOf() }.add(item)
-        }
-
-        byDigest.values
-            .filter { group -> group.size > 1 }
-            .flatten()
-            .mapTo(linkedSetOf()) { it.selectionKey }
+                messageDigest.digest().joinToString("") { byte -> "%02x".format(byte) }
+            }
+        }.getOrNull() ?: return@forEach
+        byDigest.getOrPut(digest) { mutableListOf() }.add(item)
     }
+
+    byDigest.values
+        .filter { it.size > 1 }
+        .flatten()
+        .mapTo(linkedSetOf()) { it.selectionKey }
+}
 
 private const val ONE_YEAR_SECONDS = 365L * 24L * 60L * 60L
