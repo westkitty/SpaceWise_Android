@@ -22,8 +22,8 @@ class AppListViewModel(private val repository: StorageStatsRepository) : ViewMod
         viewModelScope.launch {
             _isLoading.value = true
             try {
-                _appsList.value = repository.getTopAppsByStorageSize()
-            } catch (e: Exception) {
+                _appsList.value = repository.getTopAppsByStorageSize(limit = 200)
+            } catch (_: Exception) {
                 _appsList.value = emptyList()
             } finally {
                 _isLoading.value = false
