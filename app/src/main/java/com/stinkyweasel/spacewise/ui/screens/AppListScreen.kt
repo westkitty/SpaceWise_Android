@@ -1,16 +1,20 @@
 package com.stinkyweasel.spacewise.ui.screens
 
+import android.content.Context
+import android.content.Intent
 import android.graphics.drawable.BitmapDrawable
+import android.net.Uri
+import android.provider.Settings
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
@@ -22,7 +26,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -39,6 +47,7 @@ fun AppListScreen(
 ) {
     val appsList by viewModel.appsList.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
+    val context = LocalContext.current
 
     LaunchedEffect(Unit) {
         viewModel.loadApps()
@@ -91,16 +100,19 @@ fun AppListScreen(
                 ) {
                     item {
                         Text(
-                            text = "Installed Apps sorted by space occupied:",
+                            text = "Tap an app to open its Android settings page.",
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.padding(bottom = 6.dp)
                         )
                     }
-                    
-                    items(appsList) { app ->
-                        AppInfoRow(app = app)
+
+                    items(appsList, key = { it.packageName }) { app ->
+                        AppInfoRow(
+                            app = app,
+                            onClick = { openAppSettings(context, app.packageName) }
+                        )
                     }
                 }
             }
@@ -109,12 +121,19 @@ fun AppListScreen(
 }
 
 @Composable
-fun AppInfoRow(app: AppStorageInfo) {
+fun AppInfoRow(
+    app: AppStorageInfo,
+    onClick: () -> Unit
+) {
     val iconBitmap = (app.icon as? BitmapDrawable)?.bitmap?.asImageBitmap()
 
     Card(
         modifier = Modifier
             .fillMaxWidth()
+            .semantics {
+                contentDescription = "${app.appName}, ${app.formattedSize}. Open Android app settings."
+            }
+            .clickable(role = Role.Button, onClick = onClick)
             .testTag("app_row_${app.packageName}"),
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -125,11 +144,10 @@ fun AppInfoRow(app: AppStorageInfo) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // App Icon with safe bitmap check and custom letter fallback
             if (iconBitmap != null) {
                 Image(
                     bitmap = iconBitmap,
-                    contentDescription = "Icon for ${app.appName}",
+                    contentDescription = null,
                     modifier = Modifier
                         .size(44.dp)
                         .clip(RoundedCornerShape(8.dp))
@@ -174,14 +192,34 @@ fun AppInfoRow(app: AppStorageInfo) {
                 )
             }
 
-            Text(
-                text = app.formattedSize,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary
-            )
+            Column(horizontalAlignment = Alignment.End) {
+                Text(
+                    text = app.formattedSize,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Icon(
+                    imageVector = Icons.Default.ChevronRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
+}
+
+private fun openAppSettings(context: Context, packageName: String) {
+    val appDetailsIntent = Intent(
+        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+        Uri.fromParts("package", packageName, null)
+    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+    val fallbackIntent = Intent(Settings.ACTION_MANAGE_APPLICATIONS_SETTINGS)
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+    runCatching { context.startActivity(appDetailsIntent) }
+        .recoverCatching { context.startActivity(fallbackIntent) }
 }
 
 @Composable
@@ -206,7 +244,7 @@ fun NoAppsEmptyState(onNavigateToPermissions: () -> Unit) {
             fontWeight = FontWeight.Bold
         )
         Text(
-            text = "To fetch package statistics like app size, user data, and caches, SpaceWise requires 'Usage Statistics' settings access.",
+            text = "To fetch visible package statistics such as app size, user data, and caches, SpaceWise requires Usage Access.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
         )
