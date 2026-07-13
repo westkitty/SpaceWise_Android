@@ -6,6 +6,7 @@ import com.stinkyweasel.spacewise.data.models.CategoryAccessState
 import com.stinkyweasel.spacewise.data.models.DeletionResult
 import com.stinkyweasel.spacewise.data.models.MediaItem
 import com.stinkyweasel.spacewise.data.repository.StorageStatsRepository
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -23,16 +24,18 @@ class CategoryDetailViewModel(private val repository: StorageStatsRepository) : 
     val accessState: StateFlow<CategoryAccessState> = _accessState.asStateFlow()
 
     private var activeCategory: String? = null
+    private var loadJob: Job? = null
 
     fun loadMediaForCategory(categoryName: String) {
         activeCategory = categoryName
-        viewModelScope.launch {
+        loadJob?.cancel()
+        loadJob = viewModelScope.launch {
             _isLoading.value = true
             _accessState.value = repository.getCategoryAccessState(categoryName)
             try {
                 _mediaItems.value = when (_accessState.value) {
                     CategoryAccessState.AVAILABLE,
-                    CategoryAccessState.PARTIAL -> repository.getMediaItemsForCategory(categoryName)
+                    CategoryAccessState.PARTIAL -> repository.getMediaItemsForCategory(categoryName, limit = 500)
                     else -> emptyList()
                 }
             } catch (_: SecurityException) {
@@ -47,10 +50,10 @@ class CategoryDetailViewModel(private val repository: StorageStatsRepository) : 
         }
     }
 
-    fun deleteSelectedItems(selectedIds: Set<Long>, onComplete: (DeletionResult) -> Unit) {
+    fun deleteSelectedItems(selectedKeys: Set<String>, onComplete: (DeletionResult) -> Unit) {
         viewModelScope.launch {
             val category = activeCategory
-            val requested = _mediaItems.value.filter { it.id in selectedIds }
+            val requested = _mediaItems.value.filter { it.selectionKey in selectedKeys }
             if (category == null || requested.isEmpty()) {
                 onComplete(DeletionResult(0, 0, 0, 0, 0L))
                 return@launch
@@ -64,7 +67,7 @@ class CategoryDetailViewModel(private val repository: StorageStatsRepository) : 
                 val stillPresentOrUnknown = requested.size - verifiedDeleted.size - skipped
 
                 _mediaItems.value = try {
-                    repository.getMediaItemsForCategory(category)
+                    repository.getMediaItemsForCategory(category, limit = 500)
                 } catch (_: Exception) {
                     _mediaItems.value
                 }
