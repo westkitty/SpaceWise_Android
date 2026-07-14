@@ -59,43 +59,75 @@ class CategoryDetailViewModel(private val repository: StorageStatsRepository) : 
                 return@launch
             }
 
+            loadJob?.cancel()
             _isLoading.value = true
             try {
-                repository.deleteMediaItems(requested)
-                val verifiedDeleted = repository.getVerifiedDeletedItems(requested)
-                val skipped = requested.count { it.uriString == null }
-                val stillPresentOrUnknown = requested.size - verifiedDeleted.size - skipped
-
-                _mediaItems.value = try {
-                    repository.getMediaItemsForCategory(category, limit = 500)
-                } catch (_: Exception) {
-                    _mediaItems.value
-                }
-
-                onComplete(
-                    DeletionResult(
-                        requestedCount = requested.size,
-                        verifiedDeletedCount = verifiedDeleted.size,
-                        stillPresentCount = stillPresentOrUnknown.coerceAtLeast(0),
-                        skippedCount = skipped,
-                        verifiedReclaimedBytes = verifiedDeleted.sumOf { it.sizeBytes },
-                        confirmationMayBeRequired = stillPresentOrUnknown > 0
-                    )
-                )
+                // Process every item. The repository's compatibility method returns after a success,
+                // so passing one item at a time prevents a successful first deletion from skipping the rest.
+                requested.forEach { item -> repository.deleteMediaItems(listOf(item)) }
+                onComplete(finalizeDeletion(category, requested))
             } catch (_: Exception) {
-                onComplete(
-                    DeletionResult(
-                        requestedCount = requested.size,
-                        verifiedDeletedCount = 0,
-                        stillPresentCount = requested.size,
-                        skippedCount = 0,
-                        verifiedReclaimedBytes = 0L,
-                        confirmationMayBeRequired = true
-                    )
-                )
+                onComplete(failedDeletionResult(requested))
             } finally {
                 _isLoading.value = false
             }
         }
     }
+
+    fun verifySelectedItemsDeleted(selectedKeys: Set<String>, onComplete: (DeletionResult) -> Unit) {
+        viewModelScope.launch {
+            val category = activeCategory
+            val requested = _mediaItems.value.filter { it.selectionKey in selectedKeys }
+            if (category == null || requested.isEmpty()) {
+                onComplete(DeletionResult(0, 0, 0, 0, 0L))
+                return@launch
+            }
+
+            loadJob?.cancel()
+            _isLoading.value = true
+            try {
+                onComplete(finalizeDeletion(category, requested))
+            } catch (_: Exception) {
+                onComplete(failedDeletionResult(requested))
+            } finally {
+                _isLoading.value = false
+            }
+        }
+    }
+
+    private suspend fun finalizeDeletion(
+        category: String,
+        requested: List<MediaItem>
+    ): DeletionResult {
+        val verifiedDeleted = repository.getVerifiedDeletedItems(requested)
+        val skipped = requested.count { it.uriString == null }
+        val stillPresentOrUnknown = requested.size - verifiedDeleted.size - skipped
+
+        _mediaItems.value = try {
+            repository.getMediaItemsForCategory(category, limit = 500)
+        } catch (_: Exception) {
+            _mediaItems.value.filterNot { candidate ->
+                verifiedDeleted.any { deleted -> deleted.selectionKey == candidate.selectionKey }
+            }
+        }
+        _accessState.value = repository.getCategoryAccessState(category)
+
+        return DeletionResult(
+            requestedCount = requested.size,
+            verifiedDeletedCount = verifiedDeleted.size,
+            stillPresentCount = stillPresentOrUnknown.coerceAtLeast(0),
+            skippedCount = skipped,
+            verifiedReclaimedBytes = verifiedDeleted.sumOf { it.sizeBytes },
+            confirmationMayBeRequired = stillPresentOrUnknown > 0
+        )
+    }
+
+    private fun failedDeletionResult(requested: List<MediaItem>) = DeletionResult(
+        requestedCount = requested.size,
+        verifiedDeletedCount = 0,
+        stillPresentCount = requested.size,
+        skippedCount = 0,
+        verifiedReclaimedBytes = 0L,
+        confirmationMayBeRequired = true
+    )
 }
